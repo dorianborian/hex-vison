@@ -1,0 +1,5 @@
+mss==9.0.1
+numpy==1.26.4
+opencv-python==4.9.0.80
+ultralytics>=8.3.0
+customtkinter==5.2.2
