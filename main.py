@@ -783,14 +783,6 @@ class HexVisionApp(ctk.CTk):
         smoothed_fwd = 0.0
         smoothed_turn = 0.0
         
-        # Tracking variables
-        last_target_cx = None
-        last_follow_seen_time = 0.0
-        follow_persist_sec = 1.0
-        persisted_follow_base_fwd = 0.0
-        persisted_follow_turn = 0.0
-        estimated_world_dx = 0.0
-        
         # Load ctypes for global Escape monitor
         try:
             import ctypes
@@ -1033,13 +1025,6 @@ class HexVisionApp(ctk.CTk):
                         camera_offset_comp_px = smoothed_turn * half_width * self.turn_comp_gain
                         compensated_offset = raw_offset + camera_offset_comp_px
                         turn_mag = max(-1.0, min(1.0, compensated_offset / half_width))
-
-                        if last_target_cx is not None:
-                            raw_dx = target_cx - last_target_cx
-                            camera_dx = -smoothed_turn * half_width * self.turn_comp_gain
-                            world_dx = raw_dx - camera_dx
-                            estimated_world_dx = (0.2 * world_dx) + (0.8 * estimated_world_dx)
-                        last_target_cx = target_cx
                         
                         want_looking_mode = self.looking_mode_requested or (target_depth is not None and target_depth >= self.super_close_threshold)
 
@@ -1079,32 +1064,20 @@ class HexVisionApp(ctk.CTk):
                                     base_fwd_mag = 0.0
 
                         fwd_mag = base_fwd_mag
-
-                        last_follow_seen_time = curr_time
-                        persisted_follow_base_fwd = base_fwd_mag
-                        persisted_follow_turn = turn_mag
                     else:
-                        time_since_seen = curr_time - last_follow_seen_time if last_follow_seen_time > 0 else 999.0
-                        if time_since_seen <= follow_persist_sec:
-                            action = f"PERSISTING TO LAST: {self.target_object.upper()}"
-                            action_color = (0, 255, 255)
-                            fwd_mag = persisted_follow_base_fwd
-                            turn_mag = max(-1.0, min(1.0, persisted_follow_turn + (estimated_world_dx / max(1.0, width_f * 0.5))))
+                        action = f"WAITING FOR: {self.target_object.upper()}"
+                        action_color = (150, 150, 150)
+                        fwd_mag = 0.0
+                        turn_mag = 0.0
+                        if self.looking_mode_requested:
+                            seq_ready, seq_text, seq_color = self.run_follow_enter_sequence()
+                            action = f"{seq_text}: {self.target_object.upper()}"
+                            action_color = seq_color
                         else:
-                            action = f"WAITING FOR: {self.target_object.upper()}"
-                            action_color = (150, 150, 150)
-                            fwd_mag = 0.0
-                            turn_mag = 0.0
-                            last_target_cx = None
-                            if self.looking_mode_requested:
-                                seq_ready, seq_text, seq_color = self.run_follow_enter_sequence()
-                                action = f"{seq_text}: {self.target_object.upper()}"
-                                action_color = seq_color
-                            else:
-                                exit_done, exit_text, exit_color = self.run_follow_exit_sequence()
-                                if not exit_done:
-                                    action = f"{exit_text}: {self.target_object.upper()}"
-                                    action_color = exit_color
+                            exit_done, exit_text, exit_color = self.run_follow_exit_sequence()
+                            if not exit_done:
+                                action = f"{exit_text}: {self.target_object.upper()}"
+                                action_color = exit_color
                         
                 elif self.active_goal == "Search Space" and self.target_object and target_cx is None:
                     # We are in search mode and haven't found it yet
