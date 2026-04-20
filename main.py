@@ -57,7 +57,19 @@ class HexVisionApp(ctk.CTk):
         super().__init__()
         self.title("Hex-Vision")
         self.geometry("600x1000")
-        self.resizable(False, False)
+        self.resizable(True, True)
+        self.base_window_width = 600
+        self.base_window_height = 1000
+        self._ui_scale = 1.0
+        self._viz_stacked = None
+        self.last_fwd_mag = 0.0
+        self.last_turn_mag = 0.0
+        self.mouse_hold_delay_sec = 1.0
+        self.mouse_hold_arm_time = None
+        self.mouse_left_is_down = False
+        self.mode_click_cooldown_sec = 0.6
+        self.last_mode_click_time = 0.0
+        self.turn_comp_gain = 0.55
 
         # state
         self.is_running = False
@@ -68,25 +80,43 @@ class HexVisionApp(ctk.CTk):
         self.target_object = "person"
         self.max_fwd_pct = 1.0
         self.max_rev_pct = 1.0
+        self.looking_mode = False
+        self.looking_mode_requested = False
+        self.super_close_threshold = 220.0
+        self.follow_look_state = "idle"
+        self.follow_cleanup_state = "idle"
         
         # default screen regions
         self.rgb_monitor = {"top": 100, "left": 100, "width": 800, "height": 600}
         self.depth_monitor = None # User must set this if they want depth scanning
         self.controller_monitor = None # User must set this to output motion vectors
         self.translate_motion = False
+        self.uv_spot = None
+        self.tripod_spot = None
+        self.hold_position_spot = None
+        self.rear_most_spot = None
+        self.zw_spot = None
+        self.focus_window_spot = None
         
         # Load YOLOv8 segmentation model
         self.model = None
 
         self.setup_ui()
+        self.bind("<Configure>", self.on_window_resize)
 
     def setup_ui(self):
-        self.label = ctk.CTkLabel(self, text="Hex-Vision Object Tracker", font=ctk.CTkFont(size=20, weight="bold"))
-        self.label.pack(pady=20)
+        self.main_container = ctk.CTkFrame(self, fg_color="transparent")
+        self.main_container.pack(fill="both", expand=True, padx=10, pady=10)
+        self.main_container.grid_columnconfigure(0, weight=1)
+        self.main_container.grid_rowconfigure(4, weight=1)
+        self.main_container.grid_rowconfigure(5, weight=1)
+
+        self.label = ctk.CTkLabel(self.main_container, text="Hex-Vision Object Tracker", font=ctk.CTkFont(size=20, weight="bold"))
+        self.label.grid(row=0, column=0, padx=20, pady=(8, 16), sticky="ew")
 
         # Region Frame
-        self.region_frame = ctk.CTkFrame(self)
-        self.region_frame.pack(pady=10, padx=20, fill="x")
+        self.region_frame = ctk.CTkFrame(self.main_container)
+        self.region_frame.grid(row=1, column=0, padx=20, pady=5, sticky="ew")
 
         self.rgb_region_label = ctk.CTkLabel(self.region_frame, text=f"RGB Zone: {self.rgb_monitor['width']}x{self.rgb_monitor['height']} at ({self.rgb_monitor['left']}, {self.rgb_monitor['top']})")
         self.rgb_region_label.pack(pady=5)
@@ -107,9 +137,48 @@ class HexVisionApp(ctk.CTk):
         self.btn_set_controller = ctk.CTkButton(self.region_frame, text="Set Controller Output Region", command=self.set_controller_region)
         self.btn_set_controller.pack(pady=5)
 
+        self.spot_table = ctk.CTkFrame(self.region_frame)
+        self.spot_table.pack(fill="x", padx=8, pady=(8, 4))
+        self.spot_table.columnconfigure(0, weight=1)
+        self.spot_table.columnconfigure(1, weight=0)
+        self.spot_table.columnconfigure(2, weight=1)
+        self.spot_table.columnconfigure(3, weight=0)
+
+        ctk.CTkLabel(self.spot_table, text="Spot Setup", font=ctk.CTkFont(size=13, weight="bold")).grid(row=0, column=0, columnspan=4, pady=(4, 6), sticky="w")
+
+        self.lbl_uv_spot = ctk.CTkLabel(self.spot_table, text="UV Spot: Not Set", anchor="w")
+        self.lbl_uv_spot.grid(row=1, column=0, padx=(6, 6), pady=2, sticky="ew")
+        self.btn_set_uv_spot = ctk.CTkButton(self.spot_table, text="Set", width=70, command=self.set_uv_spot)
+        self.btn_set_uv_spot.grid(row=1, column=1, padx=(0, 10), pady=2)
+
+        self.lbl_tripod_spot = ctk.CTkLabel(self.spot_table, text="Tripod Spot: Not Set", anchor="w")
+        self.lbl_tripod_spot.grid(row=1, column=2, padx=(6, 6), pady=2, sticky="ew")
+        self.btn_set_tripod_spot = ctk.CTkButton(self.spot_table, text="Set", width=70, command=self.set_tripod_spot)
+        self.btn_set_tripod_spot.grid(row=1, column=3, padx=(0, 6), pady=2)
+
+        self.lbl_hold_pos_spot = ctk.CTkLabel(self.spot_table, text="Hold Position: Not Set", anchor="w")
+        self.lbl_hold_pos_spot.grid(row=2, column=0, padx=(6, 6), pady=2, sticky="ew")
+        self.btn_set_hold_pos_spot = ctk.CTkButton(self.spot_table, text="Set", width=70, command=self.set_hold_position_spot)
+        self.btn_set_hold_pos_spot.grid(row=2, column=1, padx=(0, 10), pady=2)
+
+        self.lbl_rear_spot = ctk.CTkLabel(self.spot_table, text="Rear-most: Not Set", anchor="w")
+        self.lbl_rear_spot.grid(row=2, column=2, padx=(6, 6), pady=2, sticky="ew")
+        self.btn_set_rear_spot = ctk.CTkButton(self.spot_table, text="Set", width=70, command=self.set_rear_most_spot)
+        self.btn_set_rear_spot.grid(row=2, column=3, padx=(0, 6), pady=2)
+
+        self.lbl_zw_spot = ctk.CTkLabel(self.spot_table, text="ZW Spot: Not Set", anchor="w")
+        self.lbl_zw_spot.grid(row=3, column=0, padx=(6, 6), pady=(2, 6), sticky="ew")
+        self.btn_set_zw_spot = ctk.CTkButton(self.spot_table, text="Set", width=70, command=self.set_zw_spot)
+        self.btn_set_zw_spot.grid(row=3, column=1, padx=(0, 10), pady=(2, 6))
+
+        self.lbl_focus_spot = ctk.CTkLabel(self.spot_table, text="Focus Window: Not Set", anchor="w")
+        self.lbl_focus_spot.grid(row=3, column=2, padx=(6, 6), pady=(2, 6), sticky="ew")
+        self.btn_set_focus_spot = ctk.CTkButton(self.spot_table, text="Set", width=70, command=self.set_focus_window_spot)
+        self.btn_set_focus_spot.grid(row=3, column=3, padx=(0, 6), pady=(2, 6))
+
         # Control Frame
-        self.control_frame = ctk.CTkFrame(self)
-        self.control_frame.pack(pady=10, padx=20, fill="x")
+        self.control_frame = ctk.CTkFrame(self.main_container)
+        self.control_frame.grid(row=2, column=0, padx=20, pady=5, sticky="ew")
 
         self.btn_start = ctk.CTkButton(self.control_frame, text="Start Vision", fg_color="green", hover_color="darkgreen", command=self.start_vision)
         self.btn_start.pack(side="left", padx=10, pady=10, expand=True)
@@ -118,8 +187,8 @@ class HexVisionApp(ctk.CTk):
         self.btn_stop.pack(side="right", padx=10, pady=10, expand=True)
 
         # Robot Goals Frame
-        self.goals_frame = ctk.CTkFrame(self)
-        self.goals_frame.pack(pady=5, padx=20, fill="x")
+        self.goals_frame = ctk.CTkFrame(self.main_container)
+        self.goals_frame.grid(row=3, column=0, padx=20, pady=5, sticky="ew")
         
         ctk.CTkLabel(self.goals_frame, text="Robot Goals & Directives", font=ctk.CTkFont(size=16, weight="bold")).grid(row=0, column=0, columnspan=2, pady=5)
         
@@ -146,13 +215,26 @@ class HexVisionApp(ctk.CTk):
         self.rev_sld = ctk.CTkSlider(self.goals_frame, from_=0, to=100, command=self.update_rev_limit)
         self.rev_sld.set(100)
         self.rev_sld.grid(row=3, column=1, padx=10, pady=5, sticky="ew")
+
+        self.chk_looking = ctk.CTkCheckBox(self.goals_frame, text="Looking Mode", command=self.toggle_looking_mode)
+        self.chk_looking.grid(row=4, column=0, padx=10, pady=(4, 8), sticky="w")
+
+        self.lbl_looking_debug = ctk.CTkLabel(
+            self.goals_frame,
+            text="dbg req:OFF act:OFF seq:idle",
+            font=ctk.CTkFont(size=11),
+            text_color="gray70",
+            anchor="e",
+        )
+        self.lbl_looking_debug.grid(row=4, column=1, padx=10, pady=(4, 8), sticky="e")
         
         self.goals_frame.columnconfigure(0, weight=1)
         self.goals_frame.columnconfigure(1, weight=1)
+        self.update_looking_debug_line()
 
         # Telemetry Data Frame
-        self.telemetry_frame = ctk.CTkFrame(self)
-        self.telemetry_frame.pack(pady=5, padx=20, fill="both", expand=True)
+        self.telemetry_frame = ctk.CTkFrame(self.main_container)
+        self.telemetry_frame.grid(row=4, column=0, padx=20, pady=5, sticky="nsew")
 
         ctk.CTkLabel(self.telemetry_frame, text="Robot Brain Telemetry", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=5)
 
@@ -169,152 +251,218 @@ class HexVisionApp(ctk.CTk):
         self.lbl_entities.pack(pady=5, padx=10, anchor="w")
 
         # Visualization Frame limits
-        self.viz_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.viz_frame.pack(pady=5, padx=20, fill="both", expand=True)
+        self.viz_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
+        self.viz_frame.grid(row=5, column=0, padx=20, pady=5, sticky="nsew")
 
         # Joystick Frame (Left)
         self.joystick_frame = ctk.CTkFrame(self.viz_frame)
-        self.joystick_frame.pack(side="left", fill="both", expand=True, padx=(0, 5))
+        self.joystick_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
 
         ctk.CTkLabel(self.joystick_frame, text="Motor Vector", font=ctk.CTkFont(size=14, weight="bold")).pack(pady=5)
 
         # Custom Tkinter Canvas for the Joystick Visual
-        self.canvas_joy = tk.Canvas(self.joystick_frame, width=160, height=160, bg="#2b2b2b", highlightthickness=0)
-        self.canvas_joy.pack(pady=10)
-
-        # Draw coordinate grid and circle
-        self.canvas_joy.create_oval(10, 10, 150, 150, outline="#555555", width=2)   # Boundary Circle
-        self.canvas_joy.create_line(80, 10, 80, 150, fill="#444444", dash=(4, 4))   # Y Axis
-        self.canvas_joy.create_line(10, 80, 150, 80, fill="#444444", dash=(4, 4))   # X Axis
-        
-        # The moving control point
-        self.joy_dot = self.canvas_joy.create_oval(75, 75, 85, 85, fill="cyan")
+        self.canvas_joy = tk.Canvas(self.joystick_frame, width=220, height=220, bg="#2b2b2b", highlightthickness=0)
+        self.canvas_joy.pack(fill="both", expand=True, padx=10, pady=10)
+        self.canvas_joy.bind("<Configure>", self.on_joy_resize)
 
         # Radar Frame (Right)
         self.radar_frame = ctk.CTkFrame(self.viz_frame)
-        self.radar_frame.pack(side="right", fill="both", expand=True, padx=(5, 0))
+        self.radar_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
         
         ctk.CTkLabel(self.radar_frame, text="Predictive Path", font=ctk.CTkFont(size=14, weight="bold")).pack(pady=5)
         
-        self.canvas_radar = tk.Canvas(self.radar_frame, width=160, height=160, bg="#111111", highlightthickness=0)
-        self.canvas_radar.pack(pady=10)
-        
-        # Base Radar UI
-        self.canvas_radar.create_line(80, 0, 80, 160, fill="#333333", dash=(2, 4))
-        self.canvas_radar.create_line(0, 130, 160, 130, fill="#333333", dash=(4, 4))
-        self.canvas_radar.create_arc(40, 90, 120, 170, outline="#333333", start=0, extent=180)
-        self.canvas_radar.create_arc(10, 60, 150, 200, outline="#333333", start=0, extent=180)
-        
+        self.canvas_radar = tk.Canvas(self.radar_frame, width=220, height=220, bg="#111111", highlightthickness=0)
+        self.canvas_radar.pack(fill="both", expand=True, padx=10, pady=10)
+        self.canvas_radar.bind("<Configure>", self.on_radar_resize)
+
+        self.robot_base_image = None
+        self.robot_img = None
         try:
-            pil_img = Image.open("robot-topdown.png").resize((40, 40))
-            self.robot_img = ImageTk.PhotoImage(pil_img)
-            self.canvas_radar.create_image(80, 130, image=self.robot_img, tag="robot")
+            self.robot_base_image = Image.open("robot-topdown.png").convert("RGBA")
         except Exception:
-            self.canvas_radar.create_rectangle(65, 115, 95, 145, fill="gray", tag="robot")
+            self.robot_base_image = None
 
-        self.lbl_motor_data = ctk.CTkLabel(self, text="Power: 0% | Angle: 0%", font=ctk.CTkFont(size=14, weight="bold"))
-        self.lbl_motor_data.pack(pady=10)
+        self.lbl_motor_data = ctk.CTkLabel(self.main_container, text="Power: 0% | Angle: 0%", font=ctk.CTkFont(size=14, weight="bold"))
+        self.lbl_motor_data.grid(row=6, column=0, padx=20, pady=(5, 10), sticky="ew")
 
-        # -----------------------------
-        # Section 5: Robotic Goals & Limits
-        # -----------------------------
-        self.goals_frame = ctk.CTkFrame(self)
-        self.goals_frame.pack(pady=5, padx=10, fill="x")
+        self.viz_frame.columnconfigure(0, weight=1)
+        self.viz_frame.columnconfigure(1, weight=1)
+        self.viz_frame.bind("<Configure>", lambda e: self.update_viz_layout(e.width))
+        self.draw_joy_base()
+        self.draw_radar_base()
+        self.after(0, self.update_viz_layout)
 
-        goal_label = ctk.CTkLabel(self.goals_frame, text="Current Goal State:", font=("Consolas", 14, "bold"))
-        goal_label.pack(pady=(5, 0))
+    def on_window_resize(self, event=None):
+        if event is not None and event.widget is not self:
+            return
 
-        self.goal_var = ctk.StringVar(value="Avoid All Objects")
-        goal_menu = ctk.CTkOptionMenu(self.goals_frame, variable=self.goal_var,
-                                      values=["Avoid All Objects", "Follow Object", "Search Space"],
-                                      command=self.set_active_goal)
-        goal_menu.pack(pady=5)
-        self.active_goal = self.goal_var.get()
+        width = self.winfo_width()
+        height = self.winfo_height()
+        if width <= 1 or height <= 1:
+            return
 
-        obj_label = ctk.CTkLabel(self.goals_frame, text="Target Object:")
-        obj_label.pack()
-        self.entry_target = ctk.CTkEntry(self.goals_frame, placeholder_text="e.g. cup, person")
-        self.entry_target.pack(pady=5)
-        self.entry_target.bind("<Return>", self.update_target_obj)
-        self.entry_target.bind("<FocusOut>", self.update_target_obj)
-        self.target_object = ""
+        scale = min(width / self.base_window_width, height / self.base_window_height)
+        scale = max(0.50, min(1.35, scale))
 
-        # Throttle sliders
-        self.fwd_sld_label = ctk.CTkLabel(self.goals_frame, text="Max Forward Speed: 100%")
-        self.fwd_sld_label.pack()
-        self.fwd_sld = ctk.CTkSlider(self.goals_frame, from_=0, to=100, command=self.update_fwd_limit)
-        self.fwd_sld.set(100)
-        self.fwd_sld.pack(pady=5)
-        self.max_fwd_pct = 1.0
+        if abs(scale - self._ui_scale) >= 0.03:
+            self._ui_scale = scale
+            ctk.set_widget_scaling(scale)
 
-        self.rev_sld_label = ctk.CTkLabel(self.goals_frame, text="Max Reverse Speed: 100%")
-        self.rev_sld_label.pack()
-        self.rev_sld = ctk.CTkSlider(self.goals_frame, from_=0, to=100, command=self.update_rev_limit)
-        self.rev_sld.set(100)
-        self.rev_sld.pack(pady=(0, 10))
-        self.max_rev_pct = 1.0
+    def on_joy_resize(self, _event=None):
+        self.draw_joy_base()
+        self.render_motion_visuals(self.last_fwd_mag, self.last_turn_mag)
 
-    def set_active_goal(self, value):
-        self.active_goal = value
-        
-    def update_target_obj(self, event=None):
-        self.target_object = self.entry_target.get().lower().strip()
+    def on_radar_resize(self, _event=None):
+        self.draw_radar_base()
+        self.render_motion_visuals(self.last_fwd_mag, self.last_turn_mag)
 
-    def update_fwd_limit(self, value):
-        self.max_fwd_pct = max(0.0, float(value) / 100.0)
-        self.fwd_sld_label.configure(text=f"Max Forward Speed: {int(value)}%")
+    def draw_joy_base(self):
+        w = max(80, self.canvas_joy.winfo_width())
+        h = max(80, self.canvas_joy.winfo_height())
+        pad = max(8, int(min(w, h) * 0.08))
 
-    def update_rev_limit(self, value):
-        self.max_rev_pct = max(0.0, float(value) / 100.0)
-        self.rev_sld_label.configure(text=f"Max Reverse Speed: {int(value)}%")
+        self.joy_cx = w // 2
+        self.joy_cy = h // 2
+        self.joy_radius = max(20, min(w, h) // 2 - pad)
+
+        self.canvas_joy.delete("base")
+        self.canvas_joy.create_oval(
+            self.joy_cx - self.joy_radius,
+            self.joy_cy - self.joy_radius,
+            self.joy_cx + self.joy_radius,
+            self.joy_cy + self.joy_radius,
+            outline="#555555",
+            width=2,
+            tags="base",
+        )
+        self.canvas_joy.create_line(self.joy_cx, self.joy_cy - self.joy_radius, self.joy_cx, self.joy_cy + self.joy_radius, fill="#444444", dash=(4, 4), tags="base")
+        self.canvas_joy.create_line(self.joy_cx - self.joy_radius, self.joy_cy, self.joy_cx + self.joy_radius, self.joy_cy, fill="#444444", dash=(4, 4), tags="base")
+
+        if not self.canvas_joy.find_withtag("joy_dot"):
+            self.joy_dot = self.canvas_joy.create_oval(0, 0, 0, 0, fill="cyan", outline="", tags="joy_dot")
+
+    def draw_radar_base(self):
+        w = max(80, self.canvas_radar.winfo_width())
+        h = max(80, self.canvas_radar.winfo_height())
+        cx = w // 2
+        baseline = int(h * 0.82)
+
+        self.radar_anchor = (cx, baseline)
+        self.radar_depth_scale = max(30, int(h * 0.60))
+        self.radar_turn_scale = max(20, int(w * 0.38))
+
+        self.canvas_radar.delete("base")
+        self.canvas_radar.delete("robot")
+        self.canvas_radar.create_line(cx, 0, cx, h, fill="#333333", dash=(2, 4), tags="base")
+        self.canvas_radar.create_line(0, baseline, w, baseline, fill="#333333", dash=(4, 4), tags="base")
+
+        near_h = int(h * 0.25)
+        far_h = int(h * 0.42)
+        self.canvas_radar.create_arc(cx - int(w * 0.25), baseline - near_h, cx + int(w * 0.25), baseline + int(h * 0.10), outline="#333333", start=0, extent=180, tags="base")
+        self.canvas_radar.create_arc(cx - int(w * 0.44), baseline - far_h, cx + int(w * 0.44), baseline + int(h * 0.16), outline="#333333", start=0, extent=180, tags="base")
+
+        if self.robot_base_image is not None:
+            robot_size = max(22, int(min(w, h) * 0.18))
+            resized = self.robot_base_image.resize((robot_size, robot_size), Image.Resampling.LANCZOS)
+            self.robot_img = ImageTk.PhotoImage(resized)
+            self.canvas_radar.create_image(cx, baseline, image=self.robot_img, tags="robot")
+        else:
+            robot_w = max(14, int(w * 0.10))
+            robot_h = max(18, int(h * 0.12))
+            self.canvas_radar.create_rectangle(cx - robot_w, baseline - robot_h, cx + robot_w, baseline + robot_h, fill="gray", outline="", tags="robot")
+
+    def update_viz_layout(self, width=None):
+        if width is None:
+            width = self.viz_frame.winfo_width()
+
+        stacked = width < 420
+        if getattr(self, "_viz_stacked", None) == stacked:
+            return
+
+        self._viz_stacked = stacked
+        self.joystick_frame.grid_forget()
+        self.radar_frame.grid_forget()
+
+        if stacked:
+            self.viz_frame.rowconfigure(0, weight=1)
+            self.viz_frame.rowconfigure(1, weight=1)
+            self.viz_frame.columnconfigure(0, weight=1)
+            self.viz_frame.columnconfigure(1, weight=0)
+            self.joystick_frame.grid(row=0, column=0, sticky="nsew", pady=(0, 6))
+            self.radar_frame.grid(row=1, column=0, sticky="nsew", pady=(6, 0))
+        else:
+            self.viz_frame.rowconfigure(0, weight=1)
+            self.viz_frame.rowconfigure(1, weight=0)
+            self.viz_frame.columnconfigure(0, weight=1)
+            self.viz_frame.columnconfigure(1, weight=1)
+            self.joystick_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+            self.radar_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+
+    def render_motion_visuals(self, fwd_mag, turn_mag):
+        self.last_fwd_mag = fwd_mag
+        self.last_turn_mag = turn_mag
+
+        if hasattr(self, "joy_radius") and self.canvas_joy.find_withtag("joy_dot"):
+            dot_radius = max(4, int(self.joy_radius * 0.10))
+            dot_x = self.joy_cx + int(fwd_mag * self.joy_radius)
+            dot_y = self.joy_cy - int(turn_mag * self.joy_radius)
+            self.canvas_joy.coords(self.joy_dot, dot_x - dot_radius, dot_y - dot_radius, dot_x + dot_radius, dot_y + dot_radius)
+
+        speed_pct = int(-fwd_mag * 100)  # Negative fwd_mag is Forward (+ Speed)
+        dir_txt = "Fwd" if speed_pct > 0 else "Rev" if speed_pct < 0 else "Stop"
+        turn_pct = int(turn_mag * 100)   # Positive turn_mag is Right
+        turn_txt = "Right" if turn_pct > 0 else "Left" if turn_pct < 0 else "Straight"
+        self.lbl_motor_data.configure(text=f"Power: {abs(speed_pct)}% {dir_txt}  |  Angle: {abs(turn_pct)}% {turn_txt}")
+
+        self.canvas_radar.delete("path")
+        if not hasattr(self, "radar_anchor"):
+            return
+
+        rx, ry = self.radar_anchor
+        speed_px = speed_pct * (self.radar_depth_scale / 100.0)
+        curve_px = turn_pct * (self.radar_turn_scale / 100.0)
+
+        if abs(speed_px) > 2:
+            pt1 = (rx, ry)
+            pt2 = (int(rx + (curve_px * 0.5)), int(ry - (speed_px * 0.5)))
+            pt3 = (int(rx + curve_px), int(ry - speed_px))
+
+            path_color = "green" if speed_pct > 0 else "red"
+            self.canvas_radar.create_line(
+                [pt1, pt2, pt3],
+                smooth=True,
+                fill=path_color,
+                width=3,
+                arrow=tk.LAST,
+                tags="path",
+            )
+
+        self.canvas_radar.tag_raise("robot")
 
     def update_telemetry(self, directive_text, directive_color, threat_text, perf_text, entities_text, fwd_mag, turn_mag):
         self.lbl_directive.configure(text=f"CURRENT DIRECTIVE:\n[ {directive_text} ]", text_color=directive_color)
         self.lbl_threat_matrix.configure(text=threat_text)
         self.lbl_perf.configure(text=perf_text)
         self.lbl_entities.configure(text=entities_text)
+        self.render_motion_visuals(fwd_mag, turn_mag)
+        self.update_looking_debug_line()
 
-        # Update Joystick position
-        # fwd_mag: -1 (Left/Forward) to 1 (Right/Reverse)
-        # turn_mag: 1 (Up/TurnR) to -1 (Down/TurnL) -- tk canvas Up is negative Y
-        cx, cy = 80, 80
-        radius = 70
-        dot_x = cx + int(fwd_mag * radius)
-        dot_y = cy - int(turn_mag * radius)
-        
-        self.canvas_joy.coords(self.joy_dot, dot_x - 5, dot_y - 5, dot_x + 5, dot_y + 5)
-        
-        # Format textual motor output
-        speed_pct = int(-fwd_mag * 100) # Negative fwd_mag is Forward (+ Speed)
-        dir_txt = "Fwd" if speed_pct > 0 else "Rev" if speed_pct < 0 else "Stop"
-        
-        turn_pct = int(turn_mag * 100)  # Positive turn_mag is Right
-        turn_txt = "Right" if turn_pct > 0 else "Left" if turn_pct < 0 else "Straight"
-        
-        self.lbl_motor_data.configure(text=f"Power: {abs(speed_pct)}% {dir_txt}  |  Angle: {abs(turn_pct)}% {turn_txt}")
-        
-        # --- Update Predictive Radar Path ---
-        self.canvas_radar.delete("path")
-        rx, ry = 80, 130 # Robot anchor point
-        
-        # scale vectors visually
-        speed_px = speed_pct * 1.2 # Maps 100% to ~120px out
-        curve_px = turn_pct * 0.8  # Maps 100% to ~80px wide
-        
-        if abs(speed_px) > 2:
-            # 3-Point Bezier Spline
-            pt1 = (rx, ry)
-            pt2 = (rx + (curve_px * 0.5), ry - (speed_px * 0.5))
-            pt3 = (rx + curve_px, ry - speed_px)
-            
-            path_color = "green" if speed_pct > 0 else "red"
-            self.canvas_radar.create_line(pt1[0], pt1[1], pt2[0], pt2[1], pt3[0], pt3[1], 
-                                          smooth=True, fill=path_color, width=3, arrow=tk.LAST, tag="path")
-        
-        self.canvas_radar.tag_raise("robot")
+    def update_looking_debug_line(self):
+        req = "ON" if self.looking_mode_requested else "OFF"
+        act = "ON" if self.looking_mode else "OFF"
+        if self.follow_cleanup_state != "idle":
+            seq = f"exit:{self.follow_cleanup_state}"
+        elif self.follow_look_state != "idle":
+            seq = f"enter:{self.follow_look_state}"
+        else:
+            seq = "idle"
+
+        color = "#f0c84b" if (self.looking_mode_requested or self.looking_mode) else "gray70"
+        self.lbl_looking_debug.configure(text=f"dbg req:{req} act:{act} seq:{seq}", text_color=color)
 
     def set_active_goal(self, value):
         self.active_goal = value
+        self.update_looking_debug_line()
         
     def update_target_obj(self, event=None):
         self.target_object = self.entry_target.get().lower().strip()
@@ -326,6 +474,17 @@ class HexVisionApp(ctk.CTk):
     def update_rev_limit(self, value):
         self.max_rev_pct = max(0.0, float(value) / 100.0)
         self.rev_sld_label.configure(text=f"Max Reverse Speed: {int(value)}%")
+
+    def toggle_looking_mode(self):
+        self.looking_mode_requested = bool(self.chk_looking.get())
+        self.update_looking_debug_line()
+
+    def set_looking_mode(self, enabled):
+        enabled = bool(enabled)
+        if self.looking_mode == enabled:
+            return
+        self.looking_mode = enabled
+        self.update_looking_debug_line()
 
     def set_rgb_region(self):
         self.withdraw()
@@ -355,20 +514,206 @@ class HexVisionApp(ctk.CTk):
         def on_selected(region):
             self.controller_monitor = region
             self.btn_set_controller.configure(text=f"Output Zone: {self.controller_monitor['width']}x{self.controller_monitor['height']} at ({self.controller_monitor['left']}, {self.controller_monitor['top']})")
+            if self.translate_motion:
+                self.mouse_hold_arm_time = time.time() + self.mouse_hold_delay_sec
+                self.set_mouse_hold(False)
             
         selector = RegionSelector(self, on_selected)
         self.wait_window(selector)
         self.deiconify()
 
+    @staticmethod
+    def _region_center(region):
+        return (
+            int(region["left"] + (region["width"] // 2)),
+            int(region["top"] + (region["height"] // 2)),
+        )
+
+    def set_uv_spot(self):
+        self.withdraw()
+
+        def on_selected(region):
+            self.uv_spot = self._region_center(region)
+            self.lbl_uv_spot.configure(text=f"UV Spot: ({self.uv_spot[0]}, {self.uv_spot[1]})")
+
+        selector = RegionSelector(self, on_selected)
+        self.wait_window(selector)
+        self.deiconify()
+
+    def set_tripod_spot(self):
+        self.withdraw()
+
+        def on_selected(region):
+            self.tripod_spot = self._region_center(region)
+            self.lbl_tripod_spot.configure(text=f"Tripod Spot: ({self.tripod_spot[0]}, {self.tripod_spot[1]})")
+
+        selector = RegionSelector(self, on_selected)
+        self.wait_window(selector)
+        self.deiconify()
+
+    def set_hold_position_spot(self):
+        self.withdraw()
+
+        def on_selected(region):
+            self.hold_position_spot = self._region_center(region)
+            self.lbl_hold_pos_spot.configure(text=f"Hold Position Spot: ({self.hold_position_spot[0]}, {self.hold_position_spot[1]})")
+
+        selector = RegionSelector(self, on_selected)
+        self.wait_window(selector)
+        self.deiconify()
+
+    def set_rear_most_spot(self):
+        self.withdraw()
+
+        def on_selected(region):
+            self.rear_most_spot = self._region_center(region)
+            self.lbl_rear_spot.configure(text=f"Rear-most Spot: ({self.rear_most_spot[0]}, {self.rear_most_spot[1]})")
+
+        selector = RegionSelector(self, on_selected)
+        self.wait_window(selector)
+        self.deiconify()
+
+    def set_zw_spot(self):
+        self.withdraw()
+
+        def on_selected(region):
+            self.zw_spot = self._region_center(region)
+            self.lbl_zw_spot.configure(text=f"ZW Spot: ({self.zw_spot[0]}, {self.zw_spot[1]})")
+
+        selector = RegionSelector(self, on_selected)
+        self.wait_window(selector)
+        self.deiconify()
+
+    def set_focus_window_spot(self):
+        self.withdraw()
+
+        def on_selected(region):
+            self.focus_window_spot = self._region_center(region)
+            self.lbl_focus_spot.configure(text=f"Focus Window: ({self.focus_window_spot[0]}, {self.focus_window_spot[1]})")
+
+        selector = RegionSelector(self, on_selected)
+        self.wait_window(selector)
+        self.deiconify()
+
+    def run_follow_enter_sequence(self):
+        if self.follow_look_state == "idle":
+            if self.focus_window_spot is None:
+                return False, "SET FOCUS WINDOW SPOT", (0, 165, 255)
+            if self.click_screen_point(self.focus_window_spot):
+                self.follow_look_state = "enable_hold"
+                return False, "FOCUSING WINDOW", (0, 165, 255)
+            return False, "FOCUSING WINDOW", (0, 165, 255)
+
+        steps = [
+            ("enable_hold", self.hold_position_spot, "SET HOLD POSITION SPOT", "ENABLING HOLD POSITION"),
+            ("enter_uv", self.uv_spot, "SET UV SPOT", "ENTERING UV MODE"),
+            ("set_rear", self.rear_most_spot, "SET REAR-MOST SPOT", "SLIDING TO REAR POSITION"),
+            ("enter_zw", self.zw_spot, "SET ZW SPOT", "ENTERING ZW MODE"),
+        ]
+
+        for idx, (state_name, spot, missing_text, progress_text) in enumerate(steps):
+            if self.follow_look_state != state_name:
+                continue
+
+            if spot is None:
+                return False, missing_text, (0, 165, 255)
+
+            if self.click_screen_point(spot):
+                if idx == len(steps) - 1:
+                    self.follow_look_state = "active"
+                    self.follow_cleanup_state = "idle"
+                    self.set_looking_mode(True)
+                    return True, "ZW LOOK ACTIVE", (255, 0, 255)
+                self.follow_look_state = steps[idx + 1][0]
+            return False, progress_text, (255, 0, 255)
+
+        if self.follow_look_state == "active":
+            self.set_looking_mode(True)
+            return True, "ZW LOOK ACTIVE", (255, 0, 255)
+
+        return False, "PREPARING LOOK SEQUENCE", (255, 0, 255)
+
+    def run_follow_exit_sequence(self):
+        if self.follow_look_state == "idle" and self.follow_cleanup_state == "idle":
+            return True, "FOLLOW MODE", (0, 255, 0)
+
+        if self.follow_cleanup_state == "idle":
+            if self.focus_window_spot is None:
+                return False, "SET FOCUS WINDOW SPOT", (0, 165, 255)
+            if self.click_screen_point(self.focus_window_spot):
+                self.follow_cleanup_state = "disable_hold"
+                return False, "FOCUSING WINDOW", (0, 165, 255)
+            return False, "FOCUSING WINDOW", (0, 165, 255)
+
+        if self.follow_cleanup_state == "disable_hold":
+            if self.hold_position_spot is None:
+                return False, "SET HOLD POSITION SPOT", (0, 165, 255)
+            if self.click_screen_point(self.hold_position_spot):
+                self.follow_cleanup_state = "tripod"
+            self.set_looking_mode(False)
+            return False, "DISABLING HOLD POSITION", (0, 165, 255)
+
+        if self.follow_cleanup_state == "tripod":
+            if self.tripod_spot is None:
+                return False, "SET TRIPOD SPOT", (0, 165, 255)
+            if self.click_screen_point(self.tripod_spot):
+                self.follow_cleanup_state = "idle"
+                self.follow_look_state = "idle"
+                self.set_looking_mode(False)
+                return True, "RETURNED TO TRIPOD", (0, 255, 0)
+            return False, "RETURNING TO TRIPOD", (0, 165, 255)
+
+        self.follow_cleanup_state = "idle"
+        self.follow_look_state = "idle"
+        self.set_looking_mode(False)
+        return True, "FOLLOW MODE", (0, 255, 0)
+
+    def click_screen_point(self, point):
+        if point is None:
+            return False
+
+        now = time.time()
+        if (now - self.last_mode_click_time) < self.mode_click_cooldown_sec:
+            return False
+
+        try:
+            import ctypes
+
+            was_holding = self.mouse_left_is_down
+            if was_holding:
+                self.set_mouse_hold(False)
+
+            ctypes.windll.user32.SetCursorPos(int(point[0]), int(point[1]))
+            ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0)
+            ctypes.windll.user32.mouse_event(0x0004, 0, 0, 0, 0)
+
+            if self.translate_motion and was_holding:
+                self.mouse_hold_arm_time = time.time() + self.mouse_hold_delay_sec
+
+            self.last_mode_click_time = now
+            return True
+        except Exception:
+            return False
+
+    def set_mouse_hold(self, should_hold):
+        if should_hold == self.mouse_left_is_down:
+            return
+        try:
+            import ctypes
+            flag = 0x0002 if should_hold else 0x0004
+            ctypes.windll.user32.mouse_event(flag, 0, 0, 0, 0)
+            self.mouse_left_is_down = should_hold
+        except Exception:
+            self.mouse_left_is_down = False
+
     def toggle_controller(self):
         self.translate_motion = bool(self.chk_controller.get())
-        import ctypes
-        if self.translate_motion and self.controller_monitor:
-            # issue Down when starting
-            ctypes.windll.user32.mouse_event(0x0002, 0, 0, 0, 0) # MOUSEEVENTF_LEFTDOWN
-        elif not self.translate_motion:
-            # issue Up when stopping
-            ctypes.windll.user32.mouse_event(0x0004, 0, 0, 0, 0) # MOUSEEVENTF_LEFTUP
+        if self.translate_motion:
+            self.mouse_hold_arm_time = time.time() + self.mouse_hold_delay_sec
+            self.set_mouse_hold(False)
+        else:
+            self.mouse_hold_arm_time = None
+            self.set_mouse_hold(False)
 
     def load_model(self):
         if self.model is None:
@@ -381,6 +726,8 @@ class HexVisionApp(ctk.CTk):
     def start_vision(self):
         self.load_model()
         self.is_running = True
+        self.follow_look_state = "idle"
+        self.follow_cleanup_state = "idle"
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="normal")
         self.btn_set_rgb.configure(state="disabled")
@@ -392,14 +739,19 @@ class HexVisionApp(ctk.CTk):
 
     def stop_vision(self):
         self.is_running = False
+        self.follow_look_state = "idle"
+        self.follow_cleanup_state = "idle"
+        self.set_looking_mode(False)
         self.btn_start.configure(state="normal")
         self.btn_stop.configure(state="disabled")
         self.btn_set_rgb.configure(state="normal")
         self.btn_set_depth.configure(state="normal")
+        self.mouse_hold_arm_time = None
+        self.set_mouse_hold(False)
 
     def vision_loop(self):
         cv2.namedWindow("Hex-Vision Output", cv2.WINDOW_NORMAL)
-        cv2.resizeWindow("Hex-Vision Output", 800, 600)  # Default to a smaller, reasonable window size
+        cv2.resizeWindow("Hex-Vision Output", 640, 480)  # Reduced from 800x600
         
         sct = mss.mss()
         prev_time = time.time()
@@ -410,7 +762,11 @@ class HexVisionApp(ctk.CTk):
         
         # Tracking variables
         last_target_cx = None
-        smoothed_target_dx = 0.0
+        last_follow_seen_time = 0.0
+        follow_persist_sec = 1.0
+        persisted_follow_base_fwd = 0.0
+        persisted_follow_turn = 0.0
+        estimated_world_dx = 0.0
         
         # Load ctypes for global Escape monitor
         try:
@@ -418,15 +774,19 @@ class HexVisionApp(ctk.CTk):
             user32 = ctypes.windll.user32
         except ImportError:
             user32 = None
+        esc_was_down = False
 
         while self.is_running:
-            # Check for global Escape key (virtual key code 0x1B)
-            if user32 and user32.GetAsyncKeyState(0x1B) & 0x8000:
-                print("Global Escape detected, shutting down...")
-                self.stop_vision()
-                # Use after to guarantee safe UI destruction in main thread
-                self.after(0, self.destroy)
-                break
+            # Global Escape disables mouse translation without exiting the app.
+            esc_down = bool(user32 and (user32.GetAsyncKeyState(0x1B) & 0x8000))
+            if esc_down and not esc_was_down:
+                if self.translate_motion:
+                    print("Escape detected: disabling mouse translation.")
+                    self.translate_motion = False
+                    self.mouse_hold_arm_time = None
+                    self.set_mouse_hold(False)
+                    self.after(0, self.chk_controller.deselect)
+            esc_was_down = esc_down
                 
             # Measure FPS
             curr_time = time.time()
@@ -622,16 +982,20 @@ class HexVisionApp(ctk.CTk):
                 r_threat = np.mean(r_roi[r_roi > 80]) if np.any(r_roi > 80) else 0
 
                 # Threat values range up to ~255 based on proximity
-                if self.active_goal == "Follow Object" and self.target_object:
+                if self.active_goal != "Follow Object" and self.looking_mode_requested:
+                    fwd_mag = 0.0
+                    turn_mag = 0.0
+                    seq_ready, seq_text, seq_color = self.run_follow_enter_sequence()
+                    action = f"LOOK DEBUG: {seq_text}"
+                    action_color = seq_color
+                elif self.active_goal != "Follow Object" and (self.follow_look_state != "idle" or self.follow_cleanup_state != "idle"):
+                    fwd_mag = 0.0
+                    turn_mag = 0.0
+                    exit_done, exit_text, exit_color = self.run_follow_exit_sequence()
+                    action = f"LOOK DEBUG: {exit_text}"
+                    action_color = exit_color
+                elif self.active_goal == "Follow Object" and self.target_object:
                     if target_cx is not None:
-                        # Update tracking delta (direction of movement)
-                        if last_target_cx is not None:
-                            dx = target_cx - last_target_cx
-                            alpha_tracker = 0.15 # 15% new, 85% old for movement vector
-                            smoothed_target_dx = (alpha_tracker * dx) + ((1.0 - alpha_tracker) * smoothed_target_dx)
-                        
-                        last_target_cx = target_cx
-
                         # We see the target!
                         action = f"FOLLOWING: {self.target_object.upper()}"
                         action_color = (0, 255, 0)
@@ -639,43 +1003,85 @@ class HexVisionApp(ctk.CTk):
                         # Determine turn based on horizontal position
                         # Center is width_f / 2
                         center_x = width_f / 2
-                        offset = target_cx - center_x
-                        turn_mag = max(-1.0, min(1.0, offset / (width_f / 2)))
+                        half_width = width_f / 2
+                        raw_offset = target_cx - center_x
+
+                        # Compensate apparent target drift introduced by our own turn command.
+                        camera_offset_comp_px = smoothed_turn * half_width * self.turn_comp_gain
+                        compensated_offset = raw_offset + camera_offset_comp_px
+                        turn_mag = max(-1.0, min(1.0, compensated_offset / half_width))
+
+                        if last_target_cx is not None:
+                            raw_dx = target_cx - last_target_cx
+                            camera_dx = -smoothed_turn * half_width * self.turn_comp_gain
+                            world_dx = raw_dx - camera_dx
+                            estimated_world_dx = (0.2 * world_dx) + (0.8 * estimated_world_dx)
+                        last_target_cx = target_cx
                         
-                        # Determine fwd based on depth (we want it to be ~130 distance)
-                        if target_depth is not None:
-                            if target_depth > 180:
-                                # Too close, reverse!
-                                fwd_mag = 1.0 # Reverse
-                                action = f"BACKING UP FROM: {self.target_object.upper()}"
-                                action_color = (0, 0, 255)
-                            elif target_depth > 130:
-                                # Good distance, stop
-                                fwd_mag = 0.0
-                                action = f"HOLDING AT: {self.target_object.upper()}"
-                                action_color = (0, 255, 255)
+                        want_looking_mode = self.looking_mode_requested or (target_depth is not None and target_depth >= self.super_close_threshold)
+
+                        if want_looking_mode:
+                            # Looking mode: run hold->UV->rear->ZW sequence, then look only with turn.
+                            base_fwd_mag = 0.0
+                            seq_ready, seq_text, seq_color = self.run_follow_enter_sequence()
+                            action = f"{seq_text}: {self.target_object.upper()}"
+                            action_color = seq_color
+                            if not seq_ready:
+                                turn_mag = 0.0
+                        else:
+                            # Not super close: exit sequence (hold off -> tripod), then normal follow.
+                            exit_done, exit_text, exit_color = self.run_follow_exit_sequence()
+                            if not exit_done:
+                                base_fwd_mag = 0.0
+                                action = f"{exit_text}: {self.target_object.upper()}"
+                                action_color = exit_color
+                                turn_mag = 0.0
                             else:
-                                # Move forward to follow
-                                fwd_mag = -1.0 # Forward
-                        else:
-                            fwd_mag = 0.0
+                                # Determine fwd based on depth (we want it to be ~130 distance)
+                                if target_depth is not None:
+                                    if target_depth > 180:
+                                        # Too close, reverse!
+                                        base_fwd_mag = 1.0 # Reverse
+                                        action = f"BACKING UP FROM: {self.target_object.upper()}"
+                                        action_color = (0, 0, 255)
+                                    elif target_depth > 130:
+                                        # Good distance, stop
+                                        base_fwd_mag = 0.0
+                                        action = f"HOLDING AT: {self.target_object.upper()}"
+                                        action_color = (0, 255, 255)
+                                    else:
+                                        # Move forward to follow
+                                        base_fwd_mag = -1.0 # Forward
+                                else:
+                                    base_fwd_mag = 0.0
+
+                        fwd_mag = base_fwd_mag
+
+                        last_follow_seen_time = curr_time
+                        persisted_follow_base_fwd = base_fwd_mag
+                        persisted_follow_turn = turn_mag
                     else:
-                        action = f"SEARCHING: {self.target_object.upper()}"
-                        action_color = (0, 165, 255)
-                        fwd_mag = 0.0
-                        
-                        # Look in the last known direction the target was moving
-                        # Default is right (0.5), but we update based on smoothed dx
-                        if smoothed_target_dx > 2.0:
-                            turn_mag = 0.6  # Spin Right
-                        elif smoothed_target_dx < -2.0:
-                            turn_mag = -0.6 # Spin Left
+                        time_since_seen = curr_time - last_follow_seen_time if last_follow_seen_time > 0 else 999.0
+                        if time_since_seen <= follow_persist_sec:
+                            action = f"PERSISTING TO LAST: {self.target_object.upper()}"
+                            action_color = (0, 255, 255)
+                            fwd_mag = persisted_follow_base_fwd
+                            turn_mag = max(-1.0, min(1.0, persisted_follow_turn + (estimated_world_dx / max(1.0, width_f * 0.5))))
                         else:
-                            turn_mag = 0.5  # Default slow spin to find it if we don't have enough data
-                            
-                        # If target is lost for a while, we clear out the tracking history softly via multiplying
-                        # or we just keep the last known velocity to keep spinning in that circle.
-                        last_target_cx = None
+                            action = f"WAITING FOR: {self.target_object.upper()}"
+                            action_color = (150, 150, 150)
+                            fwd_mag = 0.0
+                            turn_mag = 0.0
+                            last_target_cx = None
+                            if self.looking_mode_requested:
+                                seq_ready, seq_text, seq_color = self.run_follow_enter_sequence()
+                                action = f"{seq_text}: {self.target_object.upper()}"
+                                action_color = seq_color
+                            else:
+                                exit_done, exit_text, exit_color = self.run_follow_exit_sequence()
+                                if not exit_done:
+                                    action = f"{exit_text}: {self.target_object.upper()}"
+                                    action_color = exit_color
                         
                 elif self.active_goal == "Search Space" and self.target_object and target_cx is None:
                     # We are in search mode and haven't found it yet
@@ -748,10 +1154,19 @@ class HexVisionApp(ctk.CTk):
                 cv2.putText(frame, f"Threat: {int(c_threat)}", (third_w + (third_w // 2) - 40, 25), cv2.FONT_HERSHEY_PLAIN, 1.5, (255,255,255), 2)
                 cv2.putText(frame, f"Threat: {int(r_threat)}", ((2 * third_w) + (third_w // 2) - 40, 25), cv2.FONT_HERSHEY_PLAIN, 1.5, (255,255,255), 2)
             else:
-                action = "WAITING FOR DEPTH FEED"
-                action_color = (150, 150, 150)
                 fwd_mag = 0.0
                 turn_mag = 0.0
+                if self.active_goal != "Follow Object" and self.looking_mode_requested:
+                    seq_ready, seq_text, seq_color = self.run_follow_enter_sequence()
+                    action = f"LOOK DEBUG: {seq_text}"
+                    action_color = seq_color
+                elif self.active_goal != "Follow Object" and (self.follow_look_state != "idle" or self.follow_cleanup_state != "idle"):
+                    exit_done, exit_text, exit_color = self.run_follow_exit_sequence()
+                    action = f"LOOK DEBUG: {exit_text}"
+                    action_color = exit_color
+                else:
+                    action = "WAITING FOR DEPTH FEED"
+                    action_color = (150, 150, 150)
 
             # Update the Tkinter Telemetry Dashboard safely
             b_color_tk = "green"
@@ -794,6 +1209,12 @@ class HexVisionApp(ctk.CTk):
                 # Move cursor
                 ctypes.windll.user32.SetCursorPos(mouse_x, mouse_y)
 
+                if self.mouse_hold_arm_time is not None and time.time() >= self.mouse_hold_arm_time:
+                    self.set_mouse_hold(True)
+                    self.mouse_hold_arm_time = None
+            else:
+                self.set_mouse_hold(False)
+
             # Show window
             cv2.imshow("Hex-Vision Output", frame)
 
@@ -802,6 +1223,8 @@ class HexVisionApp(ctk.CTk):
                 break
 
         # Safely destroy windows when loop terminates
+        self.mouse_hold_arm_time = None
+        self.set_mouse_hold(False)
         cv2.destroyAllWindows()
 
 if __name__ == "__main__":
