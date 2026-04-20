@@ -3,11 +3,13 @@ import numpy as np
 import mss
 import time
 import threading
+import json
+import os
 import tkinter as tk
 from tkinter import simpledialog, messagebox
 import customtkinter as ctk
 from ultralytics import YOLO
-from PIL import Image, ImageTk, ImageDraw, ImageFont
+from PIL import Image, ImageTk
 
 class RegionSelector(tk.Toplevel):
     def __init__(self, master, callback):
@@ -56,10 +58,10 @@ class HexVisionApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Hex-Vision")
-        self.geometry("600x1000")
+        self.geometry("900x900")
         self.resizable(True, True)
-        self.base_window_width = 600
-        self.base_window_height = 1000
+        self.base_window_width = 900
+        self.base_window_height = 900
         self._ui_scale = 1.0
         self._viz_stacked = None
         self.last_fwd_mag = 0.0
@@ -70,6 +72,12 @@ class HexVisionApp(ctk.CTk):
         self.mode_click_cooldown_sec = 0.6
         self.last_mode_click_time = 0.0
         self.turn_comp_gain = 0.55
+        self.follow_persist_sec = 0.45
+        self.follow_turn_deadzone_px = 24.0
+        self.follow_turn_gain = 1.30
+        self.follow_turn_min_cmd = 0.06
+        self.follow_turn_rate_limit = 0.18
+        self.follow_persist_decay = 0.86
 
         # state
         self.is_running = False
@@ -102,6 +110,7 @@ class HexVisionApp(ctk.CTk):
         self.model = None
 
         self.setup_ui()
+        self.load_saved_spots()
         self.fit_window_to_screen()
         self.bind("<Configure>", self.on_window_resize)
 
@@ -110,8 +119,8 @@ class HexVisionApp(ctk.CTk):
         screen_h = max(1, self.winfo_screenheight())
 
         # Keep margins so taskbar/title bar do not clip content on smaller displays.
-        max_w = max(480, min(screen_w - 80, int(screen_w * 0.96)))
-        max_h = max(520, min(screen_h - 120, int(screen_h * 0.92)))
+        max_w = max(480, min(900, min(screen_w - 80, int(screen_w * 0.96))))
+        max_h = max(520, min(900, min(screen_h - 120, int(screen_h * 0.92))))
 
         start_w = min(self.base_window_width, max_w)
         start_h = min(self.base_window_height, max_h)
@@ -129,118 +138,148 @@ class HexVisionApp(ctk.CTk):
 
     def setup_ui(self):
         self.main_container = ctk.CTkFrame(self, fg_color="transparent")
-        self.main_container.pack(fill="both", expand=True, padx=10, pady=10)
+        self.main_container.pack(fill="both", expand=True, padx=6, pady=6)
         self.main_container.grid_columnconfigure(0, weight=1)
-        self.main_container.grid_rowconfigure(4, weight=1)
-        self.main_container.grid_rowconfigure(5, weight=1)
+        self.main_container.grid_columnconfigure(1, weight=1)
+        self.main_container.grid_rowconfigure(1, weight=3)
+        self.main_container.grid_rowconfigure(2, weight=2)
 
-        self.label = ctk.CTkLabel(self.main_container, text="Hex-Vision Object Tracker", font=ctk.CTkFont(size=20, weight="bold"))
-        self.label.grid(row=0, column=0, padx=20, pady=(8, 16), sticky="ew")
+        self.label = ctk.CTkLabel(self.main_container, text="Hex-Vision Object Tracker", font=ctk.CTkFont(size=18, weight="bold"))
+        self.label.grid(row=0, column=0, columnspan=2, padx=10, pady=(2, 6), sticky="ew")
+
+        # Embedded live output (replaces external OpenCV window)
+        self.output_frame = ctk.CTkFrame(self.main_container)
+        self.output_frame.grid(row=1, column=0, columnspan=2, padx=10, pady=(0, 6), sticky="nsew")
+        self.output_frame.grid_rowconfigure(1, weight=1)
+        self.output_frame.grid_columnconfigure(0, weight=1)
+
+        self.output_title = ctk.CTkLabel(self.output_frame, text="Live Vision Output", font=ctk.CTkFont(size=13, weight="bold"))
+        self.output_title.grid(row=0, column=0, padx=8, pady=(4, 2), sticky="w")
+
+        self.output_view = tk.Label(self.output_frame, bg="#101010")
+        self.output_view.grid(row=1, column=0, padx=6, pady=(0, 6), sticky="nsew")
+        self.output_imgtk = None
+
+        # Bottom dashboard area split into left/right columns
+        self.bottom_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
+        self.bottom_frame.grid(row=2, column=0, columnspan=2, padx=10, pady=(0, 2), sticky="nsew")
+        self.bottom_frame.grid_columnconfigure(0, weight=1)
+        self.bottom_frame.grid_columnconfigure(1, weight=1)
+        self.bottom_frame.grid_rowconfigure(0, weight=1)
+
+        self.left_panel = ctk.CTkScrollableFrame(self.bottom_frame, fg_color="transparent")
+        self.left_panel.grid(row=0, column=0, padx=(0, 6), sticky="nsew")
+
+        self.right_panel = ctk.CTkFrame(self.bottom_frame, fg_color="transparent")
+        self.right_panel.grid(row=0, column=1, padx=(6, 0), sticky="nsew")
 
         # Region Frame
-        self.region_frame = ctk.CTkFrame(self.main_container)
-        self.region_frame.grid(row=1, column=0, padx=20, pady=5, sticky="ew")
+        self.region_frame = ctk.CTkFrame(self.left_panel)
+        self.region_frame.pack(fill="x", pady=(0, 4))
 
-        self.rgb_region_label = ctk.CTkLabel(self.region_frame, text=f"RGB Zone: {self.rgb_monitor['width']}x{self.rgb_monitor['height']} at ({self.rgb_monitor['left']}, {self.rgb_monitor['top']})")
-        self.rgb_region_label.pack(pady=5)
+        self.rgb_region_label = ctk.CTkLabel(self.region_frame, text=f"RGB Zone: {self.rgb_monitor['width']}x{self.rgb_monitor['height']} at ({self.rgb_monitor['left']}, {self.rgb_monitor['top']})", font=ctk.CTkFont(size=12))
+        self.rgb_region_label.pack(pady=(4, 2))
 
-        self.btn_set_rgb = ctk.CTkButton(self.region_frame, text="Set RGB Camera Zone", command=self.set_rgb_region)
-        self.btn_set_rgb.pack(pady=5)
+        self.btn_set_rgb = ctk.CTkButton(self.region_frame, text="Set RGB Camera Zone", command=self.set_rgb_region, height=30)
+        self.btn_set_rgb.pack(pady=3)
 
-        self.depth_region_label = ctk.CTkLabel(self.region_frame, text="Depth Zone: Not Set")
-        self.depth_region_label.pack(pady=5)
+        self.depth_region_label = ctk.CTkLabel(self.region_frame, text="Depth Zone: Not Set", font=ctk.CTkFont(size=12))
+        self.depth_region_label.pack(pady=(3, 2))
 
-        self.btn_set_depth = ctk.CTkButton(self.region_frame, text="Set Depth Camera Zone", command=self.set_depth_region)
-        self.btn_set_depth.pack(pady=5)
+        self.btn_set_depth = ctk.CTkButton(self.region_frame, text="Set Depth Camera Zone", command=self.set_depth_region, height=30)
+        self.btn_set_depth.pack(pady=3)
         
         # Controller Mapping
         self.chk_controller = ctk.CTkCheckBox(self.region_frame, text="Translate Motion Vector to Mouse", command=self.toggle_controller)
-        self.chk_controller.pack(pady=5)
+        self.chk_controller.pack(pady=(4, 3))
         
-        self.btn_set_controller = ctk.CTkButton(self.region_frame, text="Set Controller Output Region", command=self.set_controller_region)
-        self.btn_set_controller.pack(pady=5)
+        self.btn_set_controller = ctk.CTkButton(self.region_frame, text="Set Controller Output Region", command=self.set_controller_region, height=30)
+        self.btn_set_controller.pack(pady=3)
 
         self.spot_table = ctk.CTkFrame(self.region_frame)
-        self.spot_table.pack(fill="x", padx=8, pady=(8, 4))
+        self.spot_table.pack(fill="x", padx=8, pady=(6, 4))
         self.spot_table.columnconfigure(0, weight=1)
         self.spot_table.columnconfigure(1, weight=0)
         self.spot_table.columnconfigure(2, weight=1)
         self.spot_table.columnconfigure(3, weight=0)
 
-        ctk.CTkLabel(self.spot_table, text="Spot Setup", font=ctk.CTkFont(size=13, weight="bold")).grid(row=0, column=0, columnspan=4, pady=(4, 6), sticky="w")
+        ctk.CTkLabel(self.spot_table, text="Spot Setup", font=ctk.CTkFont(size=12, weight="bold")).grid(row=0, column=0, columnspan=4, pady=(4, 4), sticky="w")
 
         self.lbl_uv_spot = ctk.CTkLabel(self.spot_table, text="UV Spot: Not Set", anchor="w")
         self.lbl_uv_spot.grid(row=1, column=0, padx=(6, 6), pady=2, sticky="ew")
-        self.btn_set_uv_spot = ctk.CTkButton(self.spot_table, text="Set", width=70, command=self.set_uv_spot)
+        self.btn_set_uv_spot = ctk.CTkButton(self.spot_table, text="Set", width=64, height=26, command=self.set_uv_spot)
         self.btn_set_uv_spot.grid(row=1, column=1, padx=(0, 10), pady=2)
 
         self.lbl_tripod_spot = ctk.CTkLabel(self.spot_table, text="Tripod Spot: Not Set", anchor="w")
         self.lbl_tripod_spot.grid(row=1, column=2, padx=(6, 6), pady=2, sticky="ew")
-        self.btn_set_tripod_spot = ctk.CTkButton(self.spot_table, text="Set", width=70, command=self.set_tripod_spot)
+        self.btn_set_tripod_spot = ctk.CTkButton(self.spot_table, text="Set", width=64, height=26, command=self.set_tripod_spot)
         self.btn_set_tripod_spot.grid(row=1, column=3, padx=(0, 6), pady=2)
 
         self.lbl_hold_pos_spot = ctk.CTkLabel(self.spot_table, text="Hold Position: Not Set", anchor="w")
         self.lbl_hold_pos_spot.grid(row=2, column=0, padx=(6, 6), pady=2, sticky="ew")
-        self.btn_set_hold_pos_spot = ctk.CTkButton(self.spot_table, text="Set", width=70, command=self.set_hold_position_spot)
+        self.btn_set_hold_pos_spot = ctk.CTkButton(self.spot_table, text="Set", width=64, height=26, command=self.set_hold_position_spot)
         self.btn_set_hold_pos_spot.grid(row=2, column=1, padx=(0, 10), pady=2)
 
         self.lbl_rear_spot = ctk.CTkLabel(self.spot_table, text="Rear-most: Not Set", anchor="w")
         self.lbl_rear_spot.grid(row=2, column=2, padx=(6, 6), pady=2, sticky="ew")
-        self.btn_set_rear_spot = ctk.CTkButton(self.spot_table, text="Set", width=70, command=self.set_rear_most_spot)
+        self.btn_set_rear_spot = ctk.CTkButton(self.spot_table, text="Set", width=64, height=26, command=self.set_rear_most_spot)
         self.btn_set_rear_spot.grid(row=2, column=3, padx=(0, 6), pady=2)
 
         self.lbl_zw_spot = ctk.CTkLabel(self.spot_table, text="ZW Spot: Not Set", anchor="w")
         self.lbl_zw_spot.grid(row=3, column=0, padx=(6, 6), pady=(2, 6), sticky="ew")
-        self.btn_set_zw_spot = ctk.CTkButton(self.spot_table, text="Set", width=70, command=self.set_zw_spot)
+        self.btn_set_zw_spot = ctk.CTkButton(self.spot_table, text="Set", width=64, height=26, command=self.set_zw_spot)
         self.btn_set_zw_spot.grid(row=3, column=1, padx=(0, 10), pady=(2, 6))
 
         self.lbl_focus_spot = ctk.CTkLabel(self.spot_table, text="Focus Window: Not Set", anchor="w")
         self.lbl_focus_spot.grid(row=3, column=2, padx=(6, 6), pady=(2, 6), sticky="ew")
-        self.btn_set_focus_spot = ctk.CTkButton(self.spot_table, text="Set", width=70, command=self.set_focus_window_spot)
+        self.btn_set_focus_spot = ctk.CTkButton(self.spot_table, text="Set", width=64, height=26, command=self.set_focus_window_spot)
         self.btn_set_focus_spot.grid(row=3, column=3, padx=(0, 6), pady=(2, 6))
 
+        self.btn_save_spots = ctk.CTkButton(self.spot_table, text="Save Spots", height=30, command=self.save_spots)
+        self.btn_save_spots.grid(row=4, column=0, columnspan=4, padx=6, pady=(2, 6), sticky="ew")
+
         # Control Frame
-        self.control_frame = ctk.CTkFrame(self.main_container)
-        self.control_frame.grid(row=2, column=0, padx=20, pady=5, sticky="ew")
+        self.control_frame = ctk.CTkFrame(self.left_panel)
+        self.control_frame.pack(fill="x", pady=(0, 4))
 
-        self.btn_start = ctk.CTkButton(self.control_frame, text="Start Vision", fg_color="green", hover_color="darkgreen", command=self.start_vision)
-        self.btn_start.pack(side="left", padx=10, pady=10, expand=True)
+        self.btn_start = ctk.CTkButton(self.control_frame, text="Start Vision", fg_color="green", hover_color="darkgreen", height=34, command=self.start_vision)
+        self.btn_start.pack(side="left", padx=8, pady=8, expand=True)
 
-        self.btn_stop = ctk.CTkButton(self.control_frame, text="Stop Vision", fg_color="red", hover_color="darkred", state="disabled", command=self.stop_vision)
-        self.btn_stop.pack(side="right", padx=10, pady=10, expand=True)
+        self.btn_stop = ctk.CTkButton(self.control_frame, text="Stop Vision", fg_color="red", hover_color="darkred", state="disabled", height=34, command=self.stop_vision)
+        self.btn_stop.pack(side="right", padx=8, pady=8, expand=True)
 
         # Robot Goals Frame
-        self.goals_frame = ctk.CTkFrame(self.main_container)
-        self.goals_frame.grid(row=3, column=0, padx=20, pady=5, sticky="ew")
+        self.goals_frame = ctk.CTkFrame(self.left_panel)
+        self.goals_frame.pack(fill="x")
         
-        ctk.CTkLabel(self.goals_frame, text="Robot Goals & Directives", font=ctk.CTkFont(size=16, weight="bold")).grid(row=0, column=0, columnspan=2, pady=5)
+        ctk.CTkLabel(self.goals_frame, text="Robot Goals & Directives", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, columnspan=2, pady=4)
         
         self.goal_var = ctk.StringVar(value="Avoid All Objects")
         self.opt_goal = ctk.CTkOptionMenu(self.goals_frame, variable=self.goal_var, 
                                           values=["Avoid All Objects", "Follow Object", "Search for Object"], 
                                           command=self.set_active_goal)
-        self.opt_goal.grid(row=1, column=0, padx=10, pady=5, sticky="ew")
+        self.opt_goal.grid(row=1, column=0, padx=8, pady=4, sticky="ew")
         
         self.entry_target = ctk.CTkEntry(self.goals_frame, placeholder_text="Target Object/Class (e.g. person)")
         self.entry_target.insert(0, "person")
-        self.entry_target.bind("<KeyRelease>", self.update_target_obj)
-        self.entry_target.grid(row=1, column=1, padx=10, pady=5, sticky="ew")
+        self.entry_target.configure(state="disabled")
+        self.entry_target.grid(row=1, column=1, padx=8, pady=4, sticky="ew")
         
         # Max FWD / REV sliders
-        self.fwd_sld_label = ctk.CTkLabel(self.goals_frame, text="Max Forward Speed: 100%")
-        self.fwd_sld_label.grid(row=2, column=0, padx=10, pady=(10,0))
+        self.fwd_sld_label = ctk.CTkLabel(self.goals_frame, text="Max Forward Speed: 100%", font=ctk.CTkFont(size=12))
+        self.fwd_sld_label.grid(row=2, column=0, padx=8, pady=(6, 0))
         self.fwd_sld = ctk.CTkSlider(self.goals_frame, from_=0, to=100, command=self.update_fwd_limit)
         self.fwd_sld.set(100)
-        self.fwd_sld.grid(row=3, column=0, padx=10, pady=5, sticky="ew")
+        self.fwd_sld.grid(row=3, column=0, padx=8, pady=4, sticky="ew")
 
-        self.rev_sld_label = ctk.CTkLabel(self.goals_frame, text="Max Reverse Speed: 100%")
-        self.rev_sld_label.grid(row=2, column=1, padx=10, pady=(10,0))
+        self.rev_sld_label = ctk.CTkLabel(self.goals_frame, text="Max Reverse Speed: 100%", font=ctk.CTkFont(size=12))
+        self.rev_sld_label.grid(row=2, column=1, padx=8, pady=(6, 0))
         self.rev_sld = ctk.CTkSlider(self.goals_frame, from_=0, to=100, command=self.update_rev_limit)
         self.rev_sld.set(100)
-        self.rev_sld.grid(row=3, column=1, padx=10, pady=5, sticky="ew")
+        self.rev_sld.grid(row=3, column=1, padx=8, pady=4, sticky="ew")
 
         self.chk_looking = ctk.CTkCheckBox(self.goals_frame, text="Looking Mode", command=self.toggle_looking_mode)
-        self.chk_looking.grid(row=4, column=0, padx=10, pady=(4, 8), sticky="w")
+        self.chk_looking.grid(row=4, column=0, padx=8, pady=(2, 6), sticky="w")
 
         self.lbl_looking_debug = ctk.CTkLabel(
             self.goals_frame,
@@ -249,53 +288,53 @@ class HexVisionApp(ctk.CTk):
             text_color="gray70",
             anchor="e",
         )
-        self.lbl_looking_debug.grid(row=4, column=1, padx=10, pady=(4, 8), sticky="e")
+        self.lbl_looking_debug.grid(row=4, column=1, padx=8, pady=(2, 6), sticky="e")
         
         self.goals_frame.columnconfigure(0, weight=1)
         self.goals_frame.columnconfigure(1, weight=1)
         self.update_looking_debug_line()
 
         # Telemetry Data Frame
-        self.telemetry_frame = ctk.CTkFrame(self.main_container)
-        self.telemetry_frame.grid(row=4, column=0, padx=20, pady=5, sticky="nsew")
+        self.telemetry_frame = ctk.CTkFrame(self.right_panel)
+        self.telemetry_frame.pack(fill="both", expand=True, pady=(0, 4))
 
-        ctk.CTkLabel(self.telemetry_frame, text="Robot Brain Telemetry", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=5)
+        ctk.CTkLabel(self.telemetry_frame, text="Robot Brain Telemetry", font=ctk.CTkFont(size=14, weight="bold")).pack(pady=4)
 
-        self.lbl_directive = ctk.CTkLabel(self.telemetry_frame, text="CURRENT DIRECTIVE:\n[ STANDBY ]", font=ctk.CTkFont(size=14, weight="bold"), text_color="cyan")
-        self.lbl_directive.pack(pady=10)
+        self.lbl_directive = ctk.CTkLabel(self.telemetry_frame, text="CURRENT DIRECTIVE:\n[ STANDBY ]", font=ctk.CTkFont(size=13, weight="bold"), text_color="cyan")
+        self.lbl_directive.pack(pady=6)
 
-        self.lbl_threat_matrix = ctk.CTkLabel(self.telemetry_frame, text="THREAT MATRIX\nL: 0   |   C: 0   |   R: 0", font=ctk.CTkFont(size=13))
-        self.lbl_threat_matrix.pack(pady=5)
+        self.lbl_threat_matrix = ctk.CTkLabel(self.telemetry_frame, text="THREAT MATRIX\nL: 0   |   C: 0   |   R: 0", font=ctk.CTkFont(size=12))
+        self.lbl_threat_matrix.pack(pady=3)
         
-        self.lbl_perf = ctk.CTkLabel(self.telemetry_frame, text="FPS: 0  |  Objects: 0", font=ctk.CTkFont(size=12))
-        self.lbl_perf.pack(pady=5)
+        self.lbl_perf = ctk.CTkLabel(self.telemetry_frame, text="FPS: 0  |  Objects: 0", font=ctk.CTkFont(size=11))
+        self.lbl_perf.pack(pady=3)
 
         self.lbl_entities = ctk.CTkLabel(self.telemetry_frame, text="TRACKED ENTITIES:\n- None", justify="left")
-        self.lbl_entities.pack(pady=5, padx=10, anchor="w")
+        self.lbl_entities.pack(pady=3, padx=10, anchor="w")
 
         # Visualization Frame limits
-        self.viz_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
-        self.viz_frame.grid(row=5, column=0, padx=20, pady=5, sticky="nsew")
+        self.viz_frame = ctk.CTkFrame(self.right_panel, fg_color="transparent")
+        self.viz_frame.pack(fill="both", expand=True)
 
         # Joystick Frame (Left)
         self.joystick_frame = ctk.CTkFrame(self.viz_frame)
         self.joystick_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
 
-        ctk.CTkLabel(self.joystick_frame, text="Motor Vector", font=ctk.CTkFont(size=14, weight="bold")).pack(pady=5)
+        ctk.CTkLabel(self.joystick_frame, text="Motor Vector", font=ctk.CTkFont(size=13, weight="bold")).pack(pady=4)
 
         # Custom Tkinter Canvas for the Joystick Visual
         self.canvas_joy = tk.Canvas(self.joystick_frame, width=220, height=220, bg="#2b2b2b", highlightthickness=0)
-        self.canvas_joy.pack(fill="both", expand=True, padx=10, pady=10)
+        self.canvas_joy.pack(fill="both", expand=True, padx=8, pady=8)
         self.canvas_joy.bind("<Configure>", self.on_joy_resize)
 
         # Radar Frame (Right)
         self.radar_frame = ctk.CTkFrame(self.viz_frame)
         self.radar_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
         
-        ctk.CTkLabel(self.radar_frame, text="Predictive Path", font=ctk.CTkFont(size=14, weight="bold")).pack(pady=5)
+        ctk.CTkLabel(self.radar_frame, text="Predictive Path", font=ctk.CTkFont(size=13, weight="bold")).pack(pady=4)
         
         self.canvas_radar = tk.Canvas(self.radar_frame, width=220, height=220, bg="#111111", highlightthickness=0)
-        self.canvas_radar.pack(fill="both", expand=True, padx=10, pady=10)
+        self.canvas_radar.pack(fill="both", expand=True, padx=8, pady=8)
         self.canvas_radar.bind("<Configure>", self.on_radar_resize)
 
         self.robot_base_image = None
@@ -305,8 +344,8 @@ class HexVisionApp(ctk.CTk):
         except Exception:
             self.robot_base_image = None
 
-        self.lbl_motor_data = ctk.CTkLabel(self.main_container, text="Power: 0% | Angle: 0%", font=ctk.CTkFont(size=14, weight="bold"))
-        self.lbl_motor_data.grid(row=6, column=0, padx=20, pady=(5, 10), sticky="ew")
+        self.lbl_motor_data = ctk.CTkLabel(self.right_panel, text="Power: 0% | Angle: 0%", font=ctk.CTkFont(size=13, weight="bold"))
+        self.lbl_motor_data.pack(fill="x", pady=(4, 0))
 
         self.viz_frame.columnconfigure(0, weight=1)
         self.viz_frame.columnconfigure(1, weight=1)
@@ -314,6 +353,34 @@ class HexVisionApp(ctk.CTk):
         self.draw_joy_base()
         self.draw_radar_base()
         self.after(0, self.update_viz_layout)
+
+    def update_live_output(self, frame_bgr):
+        if frame_bgr is None:
+            return
+        if not self.winfo_exists() or not self.output_view.winfo_exists():
+            return
+
+        target_w = max(200, self.output_view.winfo_width())
+        target_h = max(140, self.output_view.winfo_height())
+
+        src_h, src_w = frame_bgr.shape[:2]
+        if src_w <= 0 or src_h <= 0:
+            return
+
+        scale = min(target_w / src_w, target_h / src_h)
+        new_w = max(1, int(src_w * scale))
+        new_h = max(1, int(src_h * scale))
+        resized = cv2.resize(frame_bgr, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+        canvas = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+        x0 = (target_w - new_w) // 2
+        y0 = (target_h - new_h) // 2
+        canvas[y0:y0 + new_h, x0:x0 + new_w] = resized
+
+        rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
+        image = Image.fromarray(rgb)
+        self.output_imgtk = ImageTk.PhotoImage(image)
+        self.output_view.configure(image=self.output_imgtk)
 
     def on_window_resize(self, event=None):
         if event is not None and event.widget is not self:
@@ -509,6 +576,28 @@ class HexVisionApp(ctk.CTk):
         self.looking_mode = enabled
         self.update_looking_debug_line()
 
+    def compute_follow_turn(self, compensated_offset_px, half_width, prev_turn_cmd, frame_scale=1.0):
+        half_width = max(1.0, float(half_width))
+        frame_scale = max(0.5, min(2.5, float(frame_scale)))
+
+        deadzone_px = max(0.0, min(self.follow_turn_deadzone_px, half_width - 1.0))
+        offset_abs = abs(float(compensated_offset_px))
+
+        if offset_abs <= deadzone_px:
+            desired_turn = 0.0
+        else:
+            usable = max(1.0, half_width - deadzone_px)
+            norm = min(1.0, (offset_abs - deadzone_px) / usable)
+            shaped = norm ** 1.15
+            desired_turn = float(np.sign(compensated_offset_px)) * min(1.0, shaped * self.follow_turn_gain)
+            if abs(desired_turn) < self.follow_turn_min_cmd:
+                desired_turn = float(np.sign(compensated_offset_px)) * self.follow_turn_min_cmd
+
+        max_step = self.follow_turn_rate_limit * frame_scale
+        low = prev_turn_cmd - max_step
+        high = prev_turn_cmd + max_step
+        return max(-1.0, min(1.0, max(low, min(high, desired_turn))))
+
     def set_rgb_region(self):
         self.withdraw()
         
@@ -552,12 +641,88 @@ class HexVisionApp(ctk.CTk):
             int(region["top"] + (region["height"] // 2)),
         )
 
+    @staticmethod
+    def _spot_to_list(spot):
+        if spot is None:
+            return None
+        return [int(spot[0]), int(spot[1])]
+
+    @staticmethod
+    def _list_to_spot(value):
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            return None
+        try:
+            return (int(value[0]), int(value[1]))
+        except (TypeError, ValueError):
+            return None
+
+    def get_spots_file_path(self):
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved_spots.json")
+
+    def update_spot_labels(self):
+        self.lbl_uv_spot.configure(
+            text=f"UV Spot: ({self.uv_spot[0]}, {self.uv_spot[1]})" if self.uv_spot else "UV Spot: Not Set"
+        )
+        self.lbl_tripod_spot.configure(
+            text=f"Tripod Spot: ({self.tripod_spot[0]}, {self.tripod_spot[1]})" if self.tripod_spot else "Tripod Spot: Not Set"
+        )
+        self.lbl_hold_pos_spot.configure(
+            text=f"Hold Position Spot: ({self.hold_position_spot[0]}, {self.hold_position_spot[1]})" if self.hold_position_spot else "Hold Position: Not Set"
+        )
+        self.lbl_rear_spot.configure(
+            text=f"Rear-most Spot: ({self.rear_most_spot[0]}, {self.rear_most_spot[1]})" if self.rear_most_spot else "Rear-most: Not Set"
+        )
+        self.lbl_zw_spot.configure(
+            text=f"ZW Spot: ({self.zw_spot[0]}, {self.zw_spot[1]})" if self.zw_spot else "ZW Spot: Not Set"
+        )
+        self.lbl_focus_spot.configure(
+            text=f"Focus Window: ({self.focus_window_spot[0]}, {self.focus_window_spot[1]})" if self.focus_window_spot else "Focus Window: Not Set"
+        )
+
+    def save_spots(self):
+        payload = {
+            "uv_spot": self._spot_to_list(self.uv_spot),
+            "tripod_spot": self._spot_to_list(self.tripod_spot),
+            "hold_position_spot": self._spot_to_list(self.hold_position_spot),
+            "rear_most_spot": self._spot_to_list(self.rear_most_spot),
+            "zw_spot": self._spot_to_list(self.zw_spot),
+            "focus_window_spot": self._spot_to_list(self.focus_window_spot),
+        }
+
+        try:
+            with open(self.get_spots_file_path(), "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2)
+            self.label.configure(text="Hex-Vision Object Tracker (spots saved)")
+        except Exception as exc:
+            messagebox.showerror("Save Spots", f"Could not save spots:\n{exc}")
+
+    def load_saved_spots(self):
+        path = self.get_spots_file_path()
+        if not os.path.exists(path):
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+
+            self.uv_spot = self._list_to_spot(payload.get("uv_spot"))
+            self.tripod_spot = self._list_to_spot(payload.get("tripod_spot"))
+            self.hold_position_spot = self._list_to_spot(payload.get("hold_position_spot"))
+            self.rear_most_spot = self._list_to_spot(payload.get("rear_most_spot"))
+            self.zw_spot = self._list_to_spot(payload.get("zw_spot"))
+            self.focus_window_spot = self._list_to_spot(payload.get("focus_window_spot"))
+
+            self.update_spot_labels()
+            self.label.configure(text="Hex-Vision Object Tracker (spots loaded)")
+        except Exception as exc:
+            messagebox.showerror("Load Spots", f"Could not load saved spots:\n{exc}")
+
     def set_uv_spot(self):
         self.withdraw()
 
         def on_selected(region):
             self.uv_spot = self._region_center(region)
-            self.lbl_uv_spot.configure(text=f"UV Spot: ({self.uv_spot[0]}, {self.uv_spot[1]})")
+            self.update_spot_labels()
 
         selector = RegionSelector(self, on_selected)
         self.wait_window(selector)
@@ -568,7 +733,7 @@ class HexVisionApp(ctk.CTk):
 
         def on_selected(region):
             self.tripod_spot = self._region_center(region)
-            self.lbl_tripod_spot.configure(text=f"Tripod Spot: ({self.tripod_spot[0]}, {self.tripod_spot[1]})")
+            self.update_spot_labels()
 
         selector = RegionSelector(self, on_selected)
         self.wait_window(selector)
@@ -579,7 +744,7 @@ class HexVisionApp(ctk.CTk):
 
         def on_selected(region):
             self.hold_position_spot = self._region_center(region)
-            self.lbl_hold_pos_spot.configure(text=f"Hold Position Spot: ({self.hold_position_spot[0]}, {self.hold_position_spot[1]})")
+            self.update_spot_labels()
 
         selector = RegionSelector(self, on_selected)
         self.wait_window(selector)
@@ -590,7 +755,7 @@ class HexVisionApp(ctk.CTk):
 
         def on_selected(region):
             self.rear_most_spot = self._region_center(region)
-            self.lbl_rear_spot.configure(text=f"Rear-most Spot: ({self.rear_most_spot[0]}, {self.rear_most_spot[1]})")
+            self.update_spot_labels()
 
         selector = RegionSelector(self, on_selected)
         self.wait_window(selector)
@@ -601,7 +766,7 @@ class HexVisionApp(ctk.CTk):
 
         def on_selected(region):
             self.zw_spot = self._region_center(region)
-            self.lbl_zw_spot.configure(text=f"ZW Spot: ({self.zw_spot[0]}, {self.zw_spot[1]})")
+            self.update_spot_labels()
 
         selector = RegionSelector(self, on_selected)
         self.wait_window(selector)
@@ -612,7 +777,7 @@ class HexVisionApp(ctk.CTk):
 
         def on_selected(region):
             self.focus_window_spot = self._region_center(region)
-            self.lbl_focus_spot.configure(text=f"Focus Window: ({self.focus_window_spot[0]}, {self.focus_window_spot[1]})")
+            self.update_spot_labels()
 
         selector = RegionSelector(self, on_selected)
         self.wait_window(selector)
@@ -742,8 +907,12 @@ class HexVisionApp(ctk.CTk):
         if self.model is None:
             self.label.configure(text="Loading Model...")
             self.update()
-            # use a segmentation model to get precise masks for convex hulls
+            # Keep the local model file but run it in person-only, box-driven mode for speed.
             self.model = YOLO("yolov8n-seg.pt")
+            try:
+                self.model.fuse()
+            except Exception:
+                pass
             self.label.configure(text="Hex-Vision Object Tracker")
 
     def start_vision(self):
@@ -773,15 +942,18 @@ class HexVisionApp(ctk.CTk):
         self.set_mouse_hold(False)
 
     def vision_loop(self):
-        cv2.namedWindow("Hex-Vision Output", cv2.WINDOW_NORMAL)
-        cv2.resizeWindow("Hex-Vision Output", 640, 480)  # Reduced from 800x600
-        
         sct = mss.mss()
         prev_time = time.time()
         
         # Smoothing variables for motor control
         smoothed_fwd = 0.0
         smoothed_turn = 0.0
+
+        # Follow persistence and turn-shaping state.
+        last_follow_seen_time = 0.0
+        persisted_target_offset_px = 0.0
+        persisted_follow_fwd = 0.0
+        prev_follow_turn_cmd = 0.0
         
         # Load ctypes for global Escape monitor
         try:
@@ -805,8 +977,12 @@ class HexVisionApp(ctk.CTk):
                 
             # Measure FPS
             curr_time = time.time()
-            fps = 1.0 / (curr_time - prev_time) if (curr_time - prev_time) > 0 else 0.0
+            frame_dt = curr_time - prev_time
+            if frame_dt <= 0:
+                frame_dt = 1.0 / 60.0
+            fps = 1.0 / frame_dt
             prev_time = curr_time
+            frame_scale = max(0.5, min(2.0, frame_dt * 30.0))
             
             detected_objects = []
             
@@ -827,149 +1003,96 @@ class HexVisionApp(ctk.CTk):
                 # Resize depth exactly to match RGB width and height
                 depth_frame = cv2.resize(depth_frame, (frame.shape[1], frame.shape[0]))
 
-                # --- GENERIC DETECTOR: Catch ANY Close Obstruction on Depth Map ---
-                # Threshold to detect any pixels > 130 intensity (close obstacles)
-                _, thresh = cv2.threshold(depth_frame, 130, 255, cv2.THRESH_BINARY)
-                obstruction_contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                
-                for c in obstruction_contours:
-                    area = cv2.contourArea(c)
-                    if area > 600:  # Ignore small noise spikes
-                        ob_hull = cv2.convexHull(c)
-                        # Check actual average density of this depth obstacle
-                        mask_single = np.zeros_like(depth_frame)
-                        cv2.drawContours(mask_single, [ob_hull], -1, 255, thickness=cv2.FILLED)
-                        obs_mean = cv2.mean(depth_frame, mask=mask_single)[0]
-                        
-                        obs_color = (0, 255, 255) # Default yellow-orange
-                        obs_label = "Obstruction"
-                        
-                        if obs_mean > 220:
-                            obs_label = "! CRITICAL COLLISION !"
-                            obs_color = (0, 0, 255) # Bright Red
-                            cv2.drawContours(frame, [ob_hull], -1, obs_color, 4) # Thicker boundary for critical
-                        elif obs_mean > 175:
-                            obs_label = "SEVERE OBSTRUCTION"
-                            obs_color = (0, 69, 255) # Red-Orange
-                            cv2.drawContours(frame, [ob_hull], -1, obs_color, 3)
-                        elif obs_mean > 130:
-                            obs_label = "Approaching Surface"
-                            obs_color = (0, 140, 255) # Orange
-                            cv2.drawContours(frame, [ob_hull], -1, obs_color, 2)
-
-                        # Render general obstruction text tag
-                        M = cv2.moments(ob_hull)
-                        if M["m00"] != 0:
-                            cX = int(M["m10"] / M["m00"])
-                            cY = int(M["m01"] / M["m00"])
-                            
-                            obs_text = f"{obs_label} (Z: {int(obs_mean)})"
-                            
-                            # Render via Pillow for TTF Consolas
-                            pil_frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                            draw = ImageDraw.Draw(pil_frame)
-                            try:
-                                font = ImageFont.truetype("orbitron.ttf", 20)
-                            except IOError:
-                                font = ImageFont.load_default()
-                                
-                            draw.text((cX - 40, cY - 25), obs_text, font=font, fill=(obs_color[2], obs_color[1], obs_color[0]))
-                            frame = cv2.cvtColor(np.array(pil_frame), cv2.COLOR_RGB2BGR)
-                            
-                            detected_objects.append(f"Depth Mass [Z: {int(obs_mean)}]")
-
             target_cx = None
             target_depth = None
-            
-            # Perform inference on RGB
-            results = self.model(frame, verbose=False)
-            
-            # Draw convex hulls
-            for r in results:
-                if r.masks is not None:
-                    # Get masks and extract contours
-                    masks = r.masks.data.cpu().numpy()
-                    classes = r.boxes.cls.cpu().numpy()
-                    names = self.model.names
-                    
-                    for idx, mask in enumerate(masks):
-                        # Resize mask to original frame shape
-                        mask = cv2.resize(mask, (frame.shape[1], frame.shape[0]))
-                        
-                        # Find contours
-                        contours, _ = cv2.findContours((mask * 255).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                        
-                        if contours:
-                            # Largest contour
-                            largest_contour = max(contours, key=cv2.contourArea)
-                            if cv2.contourArea(largest_contour) > 100: # Filter tiny specks
-                                hull = cv2.convexHull(largest_contour)
-                                
-                                # Process distance Data if depth is available
-                                distance_text = ""
-                                text_color = (0, 255, 255)
-                                mean_depth = 0
-                                if depth_frame is not None:
-                                    # Create an empty mask in shape of frame to isolate the actual object in depth frame
-                                    obj_mask = np.zeros_like(depth_frame)
-                                    cv2.drawContours(obj_mask, [hull], -1, 255, thickness=cv2.FILLED)
-                                    
-                                    # Collect pixel intensities inside the masked hull
-                                    mean_depth = cv2.mean(depth_frame, mask=obj_mask)[0]
-                                    
-                                    # More granular mapping for recognized YOLO objects
-                                    if mean_depth > 220:
-                                        distance_text = "- CRITICAL COLLISION"
-                                        text_color = (0, 0, 255) # Red text
-                                        cv2.drawContours(frame, [hull], -1, (0, 0, 255), 4) # Flash thick red hull
-                                    elif mean_depth > 175:
-                                        distance_text = "- SEVERE OBSTACLE"
-                                        text_color = (0, 69, 255) # Red-Orange
-                                        cv2.drawContours(frame, [hull], -1, (0, 69, 255), 3)
-                                    elif mean_depth > 130:
-                                        distance_text = "- Approaching"
-                                        text_color = (0, 140, 255) # Orange
-                                        cv2.drawContours(frame, [hull], -1, (0, 140, 255), 2)
-                                    elif mean_depth > 80:
-                                        distance_text = "- Near"
-                                        text_color = (0, 255, 255) # Yellow
-                                        cv2.drawContours(frame, [hull], -1, (0, 255, 0), 2) # Green Hull
-                                    else:
-                                        distance_text = "- Far/Safe"
-                                        text_color = (0, 255, 0) # Green
-                                        cv2.drawContours(frame, [hull], -1, (0, 255, 0), 2) # Green Hull
-                                else:
-                                    # Fallback contours if no depth is configured
-                                    cv2.drawContours(frame, [hull], -1, (255, 255, 255), 2) # White bounding box
-                                    text_color = (255, 255, 255)
-                                    distance_text = ""
+            target_cy = None
+            target_center_error = float("inf")
 
-                                # Label
-                                class_name = names[int(classes[idx])]
-                                M = cv2.moments(hull)
-                                if M["m00"] != 0:
-                                    cX = int(M["m10"] / M["m00"])
-                                    cY = int(M["m01"] / M["m00"])
-                                    
-                                    if self.active_goal == "Follow Object" and class_name.lower() == self.target_object:
-                                        target_cx = cX
-                                        target_depth = mean_depth
-                                        cv2.circle(frame, (cX, cY), 5, (255, 0, 255), -1) # Highlight target smaller circle
-                                        
-                                    label_text = f"{class_name} {distance_text}"
-                                    
-                                    # Use Pil / TTF for nice tech font
-                                    pil_frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                                    draw = ImageDraw.Draw(pil_frame)
-                                    try:
-                                        font = ImageFont.truetype("orbitron.ttf", 20)
-                                    except IOError:
-                                        font = ImageFont.load_default()
-                                        
-                                    draw.text((cX - 20, cY - 20), label_text, font=font, fill=(text_color[2], text_color[1], text_color[0]))
-                                    frame = cv2.cvtColor(np.array(pil_frame), cv2.COLOR_RGB2BGR)
-                                    
-                                    detected_objects.append(label_text)
+            # Always run person-only inference so live output consistently shows boxes.
+            results = self.model(
+                frame,
+                verbose=False,
+                classes=[0],
+                conf=0.35,
+                iou=0.50,
+                imgsz=416,
+                max_det=8,
+            )
+
+            frame_h, frame_w = frame.shape[:2]
+            for r in results:
+                if r.boxes is None or len(r.boxes) == 0:
+                    continue
+
+                boxes_xyxy = r.boxes.xyxy.cpu().numpy()
+                boxes_conf = r.boxes.conf.cpu().numpy() if r.boxes.conf is not None else np.ones(len(boxes_xyxy), dtype=np.float32)
+
+                for idx, box in enumerate(boxes_xyxy):
+                    x1, y1, x2, y2 = [int(v) for v in box]
+                    x1 = max(0, min(frame_w - 1, x1))
+                    y1 = max(0, min(frame_h - 1, y1))
+                    x2 = max(0, min(frame_w - 1, x2))
+                    y2 = max(0, min(frame_h - 1, y2))
+                    if x2 <= x1 or y2 <= y1:
+                        continue
+
+                    cX = (x1 + x2) // 2
+                    cY = (y1 + y2) // 2
+                    conf_pct = int(float(boxes_conf[idx]) * 100)
+
+                    mean_depth = 0.0
+                    distance_text = ""
+                    box_color = (255, 255, 255)
+
+                    if depth_frame is not None:
+                        roi = depth_frame[y1:y2, x1:x2]
+                        if roi.size > 0:
+                            close_pixels = roi[roi > 80]
+                            mean_depth = float(np.mean(close_pixels)) if close_pixels.size > 0 else 0.0
+
+                        if mean_depth > 220:
+                            distance_text = "CRITICAL"
+                            box_color = (0, 0, 255)
+                        elif mean_depth > 175:
+                            distance_text = "SEVERE"
+                            box_color = (0, 69, 255)
+                        elif mean_depth > 130:
+                            distance_text = "APPROACHING"
+                            box_color = (0, 140, 255)
+                        elif mean_depth > 80:
+                            distance_text = "NEAR"
+                            box_color = (0, 255, 255)
+                        else:
+                            distance_text = "SAFE"
+                            box_color = (0, 255, 0)
+
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
+                    label_text = f"person {conf_pct}%"
+                    if distance_text:
+                        label_text += f" {distance_text}"
+                    cv2.putText(
+                        frame,
+                        label_text,
+                        (x1, max(18, y1 - 8)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        box_color,
+                        2,
+                        cv2.LINE_AA,
+                    )
+
+                    detected_objects.append(label_text)
+
+                    # Pick the detection closest to screen center for stable follow.
+                    center_error = abs(cX - (frame_w * 0.5))
+                    if center_error < target_center_error:
+                        target_center_error = center_error
+                        target_cx = cX
+                        target_cy = cY
+                        target_depth = mean_depth
+
+            if target_cx is not None and target_cy is not None:
+                cv2.circle(frame, (target_cx, target_cy), 5, (255, 0, 255), -1)
 
             # === ROBOT BRAIN (LIVE COMMAND INTERPRETER) ===
             height_f, width_f = frame.shape[:2]
@@ -1010,21 +1133,23 @@ class HexVisionApp(ctk.CTk):
                     action = f"LOOK DEBUG: {exit_text}"
                     action_color = exit_color
                 elif self.active_goal == "Follow Object" and self.target_object:
+                    center_x = width_f / 2
+                    half_width = width_f / 2
+
                     if target_cx is not None:
                         # We see the target!
                         action = f"FOLLOWING: {self.target_object.upper()}"
                         action_color = (0, 255, 0)
                         
                         # Determine turn based on horizontal position
-                        # Center is width_f / 2
-                        center_x = width_f / 2
-                        half_width = width_f / 2
                         raw_offset = target_cx - center_x
 
                         # Compensate apparent target drift introduced by our own turn command.
                         camera_offset_comp_px = smoothed_turn * half_width * self.turn_comp_gain
                         compensated_offset = raw_offset + camera_offset_comp_px
-                        turn_mag = max(-1.0, min(1.0, compensated_offset / half_width))
+                        turn_mag = self.compute_follow_turn(compensated_offset, half_width, prev_follow_turn_cmd, frame_scale)
+                        last_follow_seen_time = curr_time
+                        persisted_target_offset_px = raw_offset
                         
                         want_looking_mode = self.looking_mode_requested or (target_depth is not None and target_depth >= self.super_close_threshold)
 
@@ -1064,11 +1189,38 @@ class HexVisionApp(ctk.CTk):
                                     base_fwd_mag = 0.0
 
                         fwd_mag = base_fwd_mag
+                        prev_follow_turn_cmd = turn_mag
+                        persisted_follow_fwd = fwd_mag
                     else:
-                        action = f"WAITING FOR: {self.target_object.upper()}"
-                        action_color = (150, 150, 150)
-                        fwd_mag = 0.0
-                        turn_mag = 0.0
+                        time_since_seen = curr_time - last_follow_seen_time if last_follow_seen_time > 0 else 999.0
+                        can_persist = (
+                            time_since_seen <= self.follow_persist_sec
+                            and not self.looking_mode_requested
+                            and self.follow_look_state == "idle"
+                            and self.follow_cleanup_state == "idle"
+                        )
+
+                        if can_persist:
+                            # Predict image-space drift of a stationary world target from our own turn.
+                            persisted_target_offset_px -= smoothed_turn * half_width * self.turn_comp_gain * frame_scale
+                            persisted_target_offset_px = max(-half_width, min(half_width, persisted_target_offset_px))
+
+                            predicted_comp_offset = persisted_target_offset_px + (smoothed_turn * half_width * self.turn_comp_gain)
+                            turn_mag = self.compute_follow_turn(predicted_comp_offset, half_width, prev_follow_turn_cmd, frame_scale)
+                            decay = self.follow_persist_decay ** frame_scale
+                            turn_mag *= decay
+                            fwd_mag = max(-0.25, min(0.25, persisted_follow_fwd * decay))
+                            prev_follow_turn_cmd = turn_mag
+
+                            action = f"PERSISTING: {self.target_object.upper()}"
+                            action_color = (0, 255, 255)
+                        else:
+                            action = f"WAITING FOR: {self.target_object.upper()}"
+                            action_color = (150, 150, 150)
+                            fwd_mag = 0.0
+                            turn_mag = 0.0
+                            prev_follow_turn_cmd = 0.0
+
                         if self.looking_mode_requested:
                             seq_ready, seq_text, seq_color = self.run_follow_enter_sequence()
                             action = f"{seq_text}: {self.target_object.upper()}"
@@ -1097,6 +1249,7 @@ class HexVisionApp(ctk.CTk):
                     turn_mag = 0.0
                     
                 else: 
+                    prev_follow_turn_cmd = 0.0
                     # Default: Avoid All Objects
                     if c_threat > 180 and l_threat > 180 and r_threat > 180:
                         action = "BACK UP / REVERSE"
@@ -1163,6 +1316,7 @@ class HexVisionApp(ctk.CTk):
                 else:
                     action = "WAITING FOR DEPTH FEED"
                     action_color = (150, 150, 150)
+                    prev_follow_turn_cmd = 0.0
 
             # Update the Tkinter Telemetry Dashboard safely
             b_color_tk = "green"
@@ -1179,14 +1333,14 @@ class HexVisionApp(ctk.CTk):
             elif len(detected_objects) > 6: ent_list += f"\n   ...and {len(detected_objects)-6} more"
             entities_text = f"TRACKED ENTITIES:\n{ent_list}"
             
-            # Apply Exponential Moving Average (EMA) smoothing to motor commands
-            # This drastically stabilizes the highly flawed/flickering input feed 
-            alpha = 0.08  # 8% new reactivity, 92% history
+            # Apply EMA smoothing with higher responsiveness to cut control lag.
+            alpha = 0.20  # 20% new reactivity, 80% history
             smoothed_fwd = (alpha * fwd_mag) + ((1.0 - alpha) * smoothed_fwd)
             smoothed_turn = (alpha * turn_mag) + ((1.0 - alpha) * smoothed_turn)
             
             # push to UI
             self.after(0, self.update_telemetry, action, b_color_tk, threat_text, perf_text, entities_text, smoothed_fwd, smoothed_turn)
+            self.after(0, self.update_live_output, frame.copy())
             
             # Apply motion vector to the mouse controller if enabled
             if self.translate_motion and self.controller_monitor:
@@ -1211,17 +1365,9 @@ class HexVisionApp(ctk.CTk):
             else:
                 self.set_mouse_hold(False)
 
-            # Show window
-            cv2.imshow("Hex-Vision Output", frame)
-
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                self.stop_vision()
-                break
-
         # Safely destroy windows when loop terminates
         self.mouse_hold_arm_time = None
         self.set_mouse_hold(False)
-        cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     app = HexVisionApp()
