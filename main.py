@@ -102,7 +102,30 @@ class HexVisionApp(ctk.CTk):
         self.model = None
 
         self.setup_ui()
+        self.fit_window_to_screen()
         self.bind("<Configure>", self.on_window_resize)
+
+    def fit_window_to_screen(self):
+        screen_w = max(1, self.winfo_screenwidth())
+        screen_h = max(1, self.winfo_screenheight())
+
+        # Keep margins so taskbar/title bar do not clip content on smaller displays.
+        max_w = max(480, min(screen_w - 80, int(screen_w * 0.96)))
+        max_h = max(520, min(screen_h - 120, int(screen_h * 0.92)))
+
+        start_w = min(self.base_window_width, max_w)
+        start_h = min(self.base_window_height, max_h)
+
+        pos_x = max(0, (screen_w - start_w) // 2)
+        pos_y = max(0, (screen_h - start_h) // 2)
+
+        self.maxsize(max_w, max_h)
+        self.geometry(f"{start_w}x{start_h}+{pos_x}+{pos_y}")
+
+        scale = min(start_w / self.base_window_width, start_h / self.base_window_height)
+        scale = max(0.50, min(1.35, scale))
+        self._ui_scale = scale
+        ctk.set_widget_scaling(scale)
 
     def setup_ui(self):
         self.main_container = ctk.CTkFrame(self, fg_color="transparent")
