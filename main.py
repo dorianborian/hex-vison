@@ -59,10 +59,9 @@ class HexVisionApp(ctk.CTk):
         super().__init__()
         self.title("Hex-Vision")
         self.geometry("900x900")
-        self.resizable(True, True)
-        self.base_window_width = 900
-        self.base_window_height = 900
-        self._ui_scale = 1.0
+        self.resizable(False, False)
+        self.minsize(900, 900)
+        self.maxsize(900, 900)
         self._viz_stacked = None
         self.last_fwd_mag = 0.0
         self.last_turn_mag = 0.0
@@ -88,6 +87,7 @@ class HexVisionApp(ctk.CTk):
         self.target_object = "person"
         self.max_fwd_pct = 1.0
         self.max_rev_pct = 1.0
+        self.max_turn_pct = 0.5
         self.looking_mode = False
         self.looking_mode_requested = False
         self.super_close_threshold = 220.0
@@ -111,30 +111,6 @@ class HexVisionApp(ctk.CTk):
 
         self.setup_ui()
         self.load_saved_spots()
-        self.fit_window_to_screen()
-        self.bind("<Configure>", self.on_window_resize)
-
-    def fit_window_to_screen(self):
-        screen_w = max(1, self.winfo_screenwidth())
-        screen_h = max(1, self.winfo_screenheight())
-
-        # Keep margins so taskbar/title bar do not clip content on smaller displays.
-        max_w = max(480, min(900, min(screen_w - 80, int(screen_w * 0.96))))
-        max_h = max(520, min(900, min(screen_h - 120, int(screen_h * 0.92))))
-
-        start_w = min(self.base_window_width, max_w)
-        start_h = min(self.base_window_height, max_h)
-
-        pos_x = max(0, (screen_w - start_w) // 2)
-        pos_y = max(0, (screen_h - start_h) // 2)
-
-        self.maxsize(max_w, max_h)
-        self.geometry(f"{start_w}x{start_h}+{pos_x}+{pos_y}")
-
-        scale = min(start_w / self.base_window_width, start_h / self.base_window_height)
-        scale = max(0.50, min(1.35, scale))
-        self._ui_scale = scale
-        ctk.set_widget_scaling(scale)
 
     def setup_ui(self):
         self.main_container = ctk.CTkFrame(self, fg_color="transparent")
@@ -381,22 +357,6 @@ class HexVisionApp(ctk.CTk):
         image = Image.fromarray(rgb)
         self.output_imgtk = ImageTk.PhotoImage(image)
         self.output_view.configure(image=self.output_imgtk)
-
-    def on_window_resize(self, event=None):
-        if event is not None and event.widget is not self:
-            return
-
-        width = self.winfo_width()
-        height = self.winfo_height()
-        if width <= 1 or height <= 1:
-            return
-
-        scale = min(width / self.base_window_width, height / self.base_window_height)
-        scale = max(0.50, min(1.35, scale))
-
-        if abs(scale - self._ui_scale) >= 0.03:
-            self._ui_scale = scale
-            ctk.set_widget_scaling(scale)
 
     def on_joy_resize(self, _event=None):
         self.draw_joy_base()
@@ -1317,6 +1277,9 @@ class HexVisionApp(ctk.CTk):
                     action = "WAITING FOR DEPTH FEED"
                     action_color = (150, 150, 150)
                     prev_follow_turn_cmd = 0.0
+
+            # Global turn clamp: limit steering authority to 50%.
+            turn_mag = max(-self.max_turn_pct, min(self.max_turn_pct, turn_mag))
 
             # Update the Tkinter Telemetry Dashboard safely
             b_color_tk = "green"
