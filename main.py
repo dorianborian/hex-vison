@@ -58,10 +58,10 @@ class HexVisionApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Hex-Vision")
-        self.geometry("900x900")
+        self.geometry("800x800")
         self.resizable(False, False)
-        self.minsize(900, 900)
-        self.maxsize(900, 900)
+        self.minsize(800, 800)
+        self.maxsize(800, 800)
         self._viz_stacked = None
         self.last_fwd_mag = 0.0
         self.last_turn_mag = 0.0
@@ -72,25 +72,27 @@ class HexVisionApp(ctk.CTk):
         self.last_mode_click_time = 0.0
         self.turn_comp_gain = 0.55
         self.follow_persist_sec = 0.45
-        self.follow_turn_deadzone_px = 24.0
+        self.follow_turn_deadzone_px = 40.0
         self.follow_turn_gain = 1.30
         self.follow_turn_min_cmd = 0.06
         self.follow_turn_rate_limit = 0.18
         self.follow_persist_decay = 0.86
+        self.autonomy_enabled = ctk.BooleanVar(value=False)
+        self.last_live_frame = None
 
         # state
         self.is_running = False
         self.capture_thread = None
         
         # Robot Goal states
-        self.active_goal = "Avoid All Objects"
+        self.active_goal = "Follow Object"
         self.target_object = "person"
         self.max_fwd_pct = 1.0
         self.max_rev_pct = 1.0
-        self.max_turn_pct = 0.5
+        self.max_turn_left_pct = 0.25
+        self.max_turn_right_pct = 0.25
         self.looking_mode = False
         self.looking_mode_requested = False
-        self.super_close_threshold = 220.0
         self.follow_look_state = "idle"
         self.follow_cleanup_state = "idle"
         
@@ -114,157 +116,186 @@ class HexVisionApp(ctk.CTk):
 
     def setup_ui(self):
         self.main_container = ctk.CTkFrame(self, fg_color="transparent")
-        self.main_container.pack(fill="both", expand=True, padx=6, pady=6)
+        self.main_container.pack(fill="both", expand=True, padx=4, pady=4)
         self.main_container.grid_columnconfigure(0, weight=1)
         self.main_container.grid_columnconfigure(1, weight=1)
-        self.main_container.grid_rowconfigure(1, weight=3)
-        self.main_container.grid_rowconfigure(2, weight=2)
+        self.main_container.grid_rowconfigure(1, weight=1)
 
-        self.label = ctk.CTkLabel(self.main_container, text="Hex-Vision Object Tracker", font=ctk.CTkFont(size=18, weight="bold"))
-        self.label.grid(row=0, column=0, columnspan=2, padx=10, pady=(2, 6), sticky="ew")
-
-        # Embedded live output (replaces external OpenCV window)
-        self.output_frame = ctk.CTkFrame(self.main_container)
-        self.output_frame.grid(row=1, column=0, columnspan=2, padx=10, pady=(0, 6), sticky="nsew")
-        self.output_frame.grid_rowconfigure(1, weight=1)
-        self.output_frame.grid_columnconfigure(0, weight=1)
-
-        self.output_title = ctk.CTkLabel(self.output_frame, text="Live Vision Output", font=ctk.CTkFont(size=13, weight="bold"))
-        self.output_title.grid(row=0, column=0, padx=8, pady=(4, 2), sticky="w")
-
-        self.output_view = tk.Label(self.output_frame, bg="#101010")
-        self.output_view.grid(row=1, column=0, padx=6, pady=(0, 6), sticky="nsew")
-        self.output_imgtk = None
+        self.label = ctk.CTkLabel(self.main_container, text="Hex-Vision Object Tracker", font=ctk.CTkFont(size=16, weight="bold"))
+        self.label.grid(row=0, column=0, columnspan=2, padx=6, pady=(2, 4), sticky="ew")
 
         # Bottom dashboard area split into left/right columns
         self.bottom_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
-        self.bottom_frame.grid(row=2, column=0, columnspan=2, padx=10, pady=(0, 2), sticky="nsew")
+        self.bottom_frame.grid(row=1, column=0, columnspan=2, padx=6, pady=(0, 2), sticky="nsew")
         self.bottom_frame.grid_columnconfigure(0, weight=1)
         self.bottom_frame.grid_columnconfigure(1, weight=1)
         self.bottom_frame.grid_rowconfigure(0, weight=1)
 
-        self.left_panel = ctk.CTkScrollableFrame(self.bottom_frame, fg_color="transparent")
-        self.left_panel.grid(row=0, column=0, padx=(0, 6), sticky="nsew")
+        self.left_panel = ctk.CTkFrame(self.bottom_frame, fg_color="transparent")
+        self.left_panel.grid(row=0, column=0, padx=(0, 4), sticky="nsew")
 
-        self.right_panel = ctk.CTkFrame(self.bottom_frame, fg_color="transparent")
-        self.right_panel.grid(row=0, column=1, padx=(6, 0), sticky="nsew")
+        self.right_panel = ctk.CTkScrollableFrame(self.bottom_frame, fg_color="transparent")
+        self.right_panel.grid(row=0, column=1, padx=(4, 0), sticky="nsew")
+
+        # Embedded live output (replaces external OpenCV window) on right side only.
+        self.output_frame = ctk.CTkFrame(self.right_panel, height=230)
+        self.output_frame.pack(fill="x", pady=(0, 3))
+        self.output_frame.pack_propagate(False)
+        self.output_frame.grid_propagate(False)
+        self.output_frame.grid_rowconfigure(1, weight=1)
+        self.output_frame.grid_columnconfigure(0, weight=1)
+
+        self.output_title = ctk.CTkLabel(self.output_frame, text="Live Vision Output", font=ctk.CTkFont(size=12, weight="bold"))
+        self.output_title.grid(row=0, column=0, padx=6, pady=(3, 1), sticky="w")
+
+        self.output_view = tk.Label(self.output_frame, bg="#101010")
+        self.output_view.grid(row=1, column=0, padx=4, pady=(0, 4), sticky="nsew")
+        self.output_imgtk = None
 
         # Region Frame
         self.region_frame = ctk.CTkFrame(self.left_panel)
-        self.region_frame.pack(fill="x", pady=(0, 4))
+        self.region_frame.pack(fill="x", pady=(0, 3))
 
-        self.rgb_region_label = ctk.CTkLabel(self.region_frame, text=f"RGB Zone: {self.rgb_monitor['width']}x{self.rgb_monitor['height']} at ({self.rgb_monitor['left']}, {self.rgb_monitor['top']})", font=ctk.CTkFont(size=12))
-        self.rgb_region_label.pack(pady=(4, 2))
+        self.rgb_region_label = ctk.CTkLabel(self.region_frame, text=f"RGB Zone: {self.rgb_monitor['width']}x{self.rgb_monitor['height']} at ({self.rgb_monitor['left']}, {self.rgb_monitor['top']})", font=ctk.CTkFont(size=11))
+        self.rgb_region_label.pack(pady=(3, 1))
 
-        self.btn_set_rgb = ctk.CTkButton(self.region_frame, text="Set RGB Camera Zone", command=self.set_rgb_region, height=30)
-        self.btn_set_rgb.pack(pady=3)
+        self.btn_set_rgb = ctk.CTkButton(self.region_frame, text="Set RGB Camera Zone", command=self.set_rgb_region, height=26)
+        self.btn_set_rgb.pack(pady=2)
 
-        self.depth_region_label = ctk.CTkLabel(self.region_frame, text="Depth Zone: Not Set", font=ctk.CTkFont(size=12))
-        self.depth_region_label.pack(pady=(3, 2))
+        self.depth_region_label = ctk.CTkLabel(self.region_frame, text="Depth Zone: Not Set", font=ctk.CTkFont(size=11))
+        self.depth_region_label.pack(pady=(2, 1))
 
-        self.btn_set_depth = ctk.CTkButton(self.region_frame, text="Set Depth Camera Zone", command=self.set_depth_region, height=30)
-        self.btn_set_depth.pack(pady=3)
+        self.btn_set_depth = ctk.CTkButton(self.region_frame, text="Set Depth Camera Zone", command=self.set_depth_region, height=26)
+        self.btn_set_depth.pack(pady=2)
         
-        # Controller Mapping
-        self.chk_controller = ctk.CTkCheckBox(self.region_frame, text="Translate Motion Vector to Mouse", command=self.toggle_controller)
-        self.chk_controller.pack(pady=(4, 3))
-        
-        self.btn_set_controller = ctk.CTkButton(self.region_frame, text="Set Controller Output Region", command=self.set_controller_region, height=30)
-        self.btn_set_controller.pack(pady=3)
+        self.btn_set_controller = ctk.CTkButton(self.region_frame, text="Set Controller Output Region", command=self.set_controller_region, height=26)
+        self.btn_set_controller.pack(pady=2)
 
         self.spot_table = ctk.CTkFrame(self.region_frame)
-        self.spot_table.pack(fill="x", padx=8, pady=(6, 4))
+        self.spot_table.pack(fill="x", padx=6, pady=(4, 3))
         self.spot_table.columnconfigure(0, weight=1)
         self.spot_table.columnconfigure(1, weight=0)
         self.spot_table.columnconfigure(2, weight=1)
         self.spot_table.columnconfigure(3, weight=0)
 
-        ctk.CTkLabel(self.spot_table, text="Spot Setup", font=ctk.CTkFont(size=12, weight="bold")).grid(row=0, column=0, columnspan=4, pady=(4, 4), sticky="w")
+        ctk.CTkLabel(self.spot_table, text="Spot Setup", font=ctk.CTkFont(size=11, weight="bold")).grid(row=0, column=0, columnspan=4, pady=(3, 3), sticky="w")
 
-        self.lbl_uv_spot = ctk.CTkLabel(self.spot_table, text="UV Spot: Not Set", anchor="w")
-        self.lbl_uv_spot.grid(row=1, column=0, padx=(6, 6), pady=2, sticky="ew")
-        self.btn_set_uv_spot = ctk.CTkButton(self.spot_table, text="Set", width=64, height=26, command=self.set_uv_spot)
-        self.btn_set_uv_spot.grid(row=1, column=1, padx=(0, 10), pady=2)
+        self.lbl_uv_spot = ctk.CTkLabel(self.spot_table, text="UV Spot: Not Set", anchor="w", font=ctk.CTkFont(size=11))
+        self.lbl_uv_spot.grid(row=1, column=0, padx=(4, 4), pady=1, sticky="ew")
+        self.btn_set_uv_spot = ctk.CTkButton(self.spot_table, text="Set", width=52, height=24, command=self.set_uv_spot)
+        self.btn_set_uv_spot.grid(row=1, column=1, padx=(0, 6), pady=1)
 
-        self.lbl_tripod_spot = ctk.CTkLabel(self.spot_table, text="Tripod Spot: Not Set", anchor="w")
-        self.lbl_tripod_spot.grid(row=1, column=2, padx=(6, 6), pady=2, sticky="ew")
-        self.btn_set_tripod_spot = ctk.CTkButton(self.spot_table, text="Set", width=64, height=26, command=self.set_tripod_spot)
-        self.btn_set_tripod_spot.grid(row=1, column=3, padx=(0, 6), pady=2)
+        self.lbl_tripod_spot = ctk.CTkLabel(self.spot_table, text="Tripod Spot: Not Set", anchor="w", font=ctk.CTkFont(size=11))
+        self.lbl_tripod_spot.grid(row=1, column=2, padx=(4, 4), pady=1, sticky="ew")
+        self.btn_set_tripod_spot = ctk.CTkButton(self.spot_table, text="Set", width=52, height=24, command=self.set_tripod_spot)
+        self.btn_set_tripod_spot.grid(row=1, column=3, padx=(0, 4), pady=1)
 
-        self.lbl_hold_pos_spot = ctk.CTkLabel(self.spot_table, text="Hold Position: Not Set", anchor="w")
-        self.lbl_hold_pos_spot.grid(row=2, column=0, padx=(6, 6), pady=2, sticky="ew")
-        self.btn_set_hold_pos_spot = ctk.CTkButton(self.spot_table, text="Set", width=64, height=26, command=self.set_hold_position_spot)
-        self.btn_set_hold_pos_spot.grid(row=2, column=1, padx=(0, 10), pady=2)
+        self.lbl_hold_pos_spot = ctk.CTkLabel(self.spot_table, text="Hold Position: Not Set", anchor="w", font=ctk.CTkFont(size=11))
+        self.lbl_hold_pos_spot.grid(row=2, column=0, padx=(4, 4), pady=1, sticky="ew")
+        self.btn_set_hold_pos_spot = ctk.CTkButton(self.spot_table, text="Set", width=52, height=24, command=self.set_hold_position_spot)
+        self.btn_set_hold_pos_spot.grid(row=2, column=1, padx=(0, 6), pady=1)
 
-        self.lbl_rear_spot = ctk.CTkLabel(self.spot_table, text="Rear-most: Not Set", anchor="w")
-        self.lbl_rear_spot.grid(row=2, column=2, padx=(6, 6), pady=2, sticky="ew")
-        self.btn_set_rear_spot = ctk.CTkButton(self.spot_table, text="Set", width=64, height=26, command=self.set_rear_most_spot)
-        self.btn_set_rear_spot.grid(row=2, column=3, padx=(0, 6), pady=2)
+        self.lbl_rear_spot = ctk.CTkLabel(self.spot_table, text="Rear-most: Not Set", anchor="w", font=ctk.CTkFont(size=11))
+        self.lbl_rear_spot.grid(row=2, column=2, padx=(4, 4), pady=1, sticky="ew")
+        self.btn_set_rear_spot = ctk.CTkButton(self.spot_table, text="Set", width=52, height=24, command=self.set_rear_most_spot)
+        self.btn_set_rear_spot.grid(row=2, column=3, padx=(0, 4), pady=1)
 
-        self.lbl_zw_spot = ctk.CTkLabel(self.spot_table, text="ZW Spot: Not Set", anchor="w")
-        self.lbl_zw_spot.grid(row=3, column=0, padx=(6, 6), pady=(2, 6), sticky="ew")
-        self.btn_set_zw_spot = ctk.CTkButton(self.spot_table, text="Set", width=64, height=26, command=self.set_zw_spot)
-        self.btn_set_zw_spot.grid(row=3, column=1, padx=(0, 10), pady=(2, 6))
+        self.lbl_zw_spot = ctk.CTkLabel(self.spot_table, text="ZW Spot: Not Set", anchor="w", font=ctk.CTkFont(size=11))
+        self.lbl_zw_spot.grid(row=3, column=0, padx=(4, 4), pady=(1, 4), sticky="ew")
+        self.btn_set_zw_spot = ctk.CTkButton(self.spot_table, text="Set", width=52, height=24, command=self.set_zw_spot)
+        self.btn_set_zw_spot.grid(row=3, column=1, padx=(0, 6), pady=(1, 4))
 
-        self.lbl_focus_spot = ctk.CTkLabel(self.spot_table, text="Focus Window: Not Set", anchor="w")
-        self.lbl_focus_spot.grid(row=3, column=2, padx=(6, 6), pady=(2, 6), sticky="ew")
-        self.btn_set_focus_spot = ctk.CTkButton(self.spot_table, text="Set", width=64, height=26, command=self.set_focus_window_spot)
-        self.btn_set_focus_spot.grid(row=3, column=3, padx=(0, 6), pady=(2, 6))
+        self.lbl_focus_spot = ctk.CTkLabel(self.spot_table, text="Focus Window: Not Set", anchor="w", font=ctk.CTkFont(size=11))
+        self.lbl_focus_spot.grid(row=3, column=2, padx=(4, 4), pady=(1, 4), sticky="ew")
+        self.btn_set_focus_spot = ctk.CTkButton(self.spot_table, text="Set", width=52, height=24, command=self.set_focus_window_spot)
+        self.btn_set_focus_spot.grid(row=3, column=3, padx=(0, 4), pady=(1, 4))
 
-        self.btn_save_spots = ctk.CTkButton(self.spot_table, text="Save Spots", height=30, command=self.save_spots)
-        self.btn_save_spots.grid(row=4, column=0, columnspan=4, padx=6, pady=(2, 6), sticky="ew")
+        self.btn_save_spots = ctk.CTkButton(self.spot_table, text="Save Spots", height=26, command=self.save_spots)
+        self.btn_save_spots.grid(row=4, column=0, columnspan=4, padx=4, pady=(1, 4), sticky="ew")
 
         # Control Frame
         self.control_frame = ctk.CTkFrame(self.left_panel)
-        self.control_frame.pack(fill="x", pady=(0, 4))
+        self.control_frame.pack(fill="x", pady=(0, 3))
 
-        self.btn_start = ctk.CTkButton(self.control_frame, text="Start Vision", fg_color="green", hover_color="darkgreen", height=34, command=self.start_vision)
-        self.btn_start.pack(side="left", padx=8, pady=8, expand=True)
+        self.autonomy_frame = ctk.CTkFrame(self.control_frame, fg_color="#1c2b3a")
+        self.autonomy_frame.pack(fill="x", padx=4, pady=(4, 2))
+        self.autonomy_frame.columnconfigure(0, weight=1)
 
-        self.btn_stop = ctk.CTkButton(self.control_frame, text="Stop Vision", fg_color="red", hover_color="darkred", state="disabled", height=34, command=self.stop_vision)
-        self.btn_stop.pack(side="right", padx=8, pady=8, expand=True)
+        self.autonomy_title = ctk.CTkLabel(
+            self.autonomy_frame,
+            text="Autonomy",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color="#c9d6e6",
+        )
+        self.autonomy_title.grid(row=0, column=0, padx=8, pady=(6, 2), sticky="w")
+
+        self.autonomy_btn = ctk.CTkButton(
+            self.autonomy_frame,
+            text="Autonomous Input: OFF",
+            command=self.toggle_controller,
+            font=ctk.CTkFont(size=12, weight="bold"),
+            height=40,
+            corner_radius=4,
+        )
+        self.autonomy_btn.grid(row=1, column=0, padx=8, pady=(0, 6), sticky="ew")
+        self.update_autonomy_visual()
+
+        self.lbl_looking_debug = ctk.CTkLabel(
+            self.autonomy_frame,
+            text="dbg req:OFF act:OFF seq:idle",
+            font=ctk.CTkFont(size=10),
+            text_color="gray70",
+            anchor="e",
+        )
+        self.lbl_looking_debug.grid(row=2, column=0, padx=8, pady=(0, 6), sticky="e")
+
+        self.btn_start = ctk.CTkButton(self.control_frame, text="Start Vision", fg_color="green", hover_color="darkgreen", height=28, command=self.start_vision)
+        self.btn_start.pack(side="left", padx=4, pady=4, expand=True)
+
+        self.btn_stop = ctk.CTkButton(self.control_frame, text="Stop Vision", fg_color="red", hover_color="darkred", state="disabled", height=28, command=self.stop_vision)
+        self.btn_stop.pack(side="right", padx=4, pady=4, expand=True)
 
         # Robot Goals Frame
         self.goals_frame = ctk.CTkFrame(self.left_panel)
         self.goals_frame.pack(fill="x")
         
-        ctk.CTkLabel(self.goals_frame, text="Robot Goals & Directives", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, columnspan=2, pady=4)
+        ctk.CTkLabel(self.goals_frame, text="Robot Goals & Directives", font=ctk.CTkFont(size=11, weight="bold")).grid(row=0, column=0, columnspan=2, pady=2)
         
-        self.goal_var = ctk.StringVar(value="Avoid All Objects")
+        self.goal_var = ctk.StringVar(value="Follow Object")
         self.opt_goal = ctk.CTkOptionMenu(self.goals_frame, variable=self.goal_var, 
                                           values=["Avoid All Objects", "Follow Object", "Search for Object"], 
-                                          command=self.set_active_goal)
-        self.opt_goal.grid(row=1, column=0, padx=8, pady=4, sticky="ew")
+                                          command=self.set_active_goal, height=26)
+        self.opt_goal.grid(row=1, column=0, padx=5, pady=2, sticky="ew")
         
-        self.entry_target = ctk.CTkEntry(self.goals_frame, placeholder_text="Target Object/Class (e.g. person)")
+        self.entry_target = ctk.CTkEntry(self.goals_frame, placeholder_text="Target Object/Class (e.g. person)", height=26)
         self.entry_target.insert(0, "person")
         self.entry_target.configure(state="disabled")
-        self.entry_target.grid(row=1, column=1, padx=8, pady=4, sticky="ew")
+        self.entry_target.grid(row=1, column=1, padx=5, pady=2, sticky="ew")
         
-        # Max FWD / REV sliders
-        self.fwd_sld_label = ctk.CTkLabel(self.goals_frame, text="Max Forward Speed: 100%", font=ctk.CTkFont(size=12))
-        self.fwd_sld_label.grid(row=2, column=0, padx=8, pady=(6, 0))
-        self.fwd_sld = ctk.CTkSlider(self.goals_frame, from_=0, to=100, command=self.update_fwd_limit)
+        self.motion_limits_frame = ctk.CTkFrame(self.goals_frame, fg_color="transparent")
+        self.motion_limits_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=(2, 2), sticky="ew")
+        self.motion_limits_frame.columnconfigure(0, weight=1)
+        self.motion_limits_frame.columnconfigure(1, weight=1)
+
+        # Motion limits (speed + turn)
+        self.fwd_sld_label = ctk.CTkLabel(self.motion_limits_frame, text="Max Speed: 100%", font=ctk.CTkFont(size=10))
+        self.fwd_sld_label.grid(row=0, column=0, padx=(0, 6), pady=(0, 0), sticky="w")
+        self.turn_sld_label = ctk.CTkLabel(self.motion_limits_frame, text=f"Max Turn: {int(self.max_turn_left_pct * 100)}%", font=ctk.CTkFont(size=10))
+        self.turn_sld_label.grid(row=0, column=1, padx=(6, 0), pady=(0, 0), sticky="w")
+
+        self.fwd_sld = ctk.CTkSlider(self.motion_limits_frame, from_=0, to=100, command=self.update_fwd_limit)
         self.fwd_sld.set(100)
-        self.fwd_sld.grid(row=3, column=0, padx=8, pady=4, sticky="ew")
+        self.fwd_sld.grid(row=1, column=0, padx=(0, 6), pady=(2, 0), sticky="ew")
 
-        self.rev_sld_label = ctk.CTkLabel(self.goals_frame, text="Max Reverse Speed: 100%", font=ctk.CTkFont(size=12))
-        self.rev_sld_label.grid(row=2, column=1, padx=8, pady=(6, 0))
-        self.rev_sld = ctk.CTkSlider(self.goals_frame, from_=0, to=100, command=self.update_rev_limit)
-        self.rev_sld.set(100)
-        self.rev_sld.grid(row=3, column=1, padx=8, pady=4, sticky="ew")
+        self.turn_sld = ctk.CTkSlider(self.motion_limits_frame, from_=0, to=100, command=self.update_turn_limit)
+        self.turn_sld.set(self.max_turn_left_pct * 100)
+        self.turn_sld.grid(row=1, column=1, padx=(6, 0), pady=(2, 0), sticky="ew")
 
-        self.chk_looking = ctk.CTkCheckBox(self.goals_frame, text="Looking Mode", command=self.toggle_looking_mode)
-        self.chk_looking.grid(row=4, column=0, padx=8, pady=(2, 6), sticky="w")
-
-        self.lbl_looking_debug = ctk.CTkLabel(
-            self.goals_frame,
-            text="dbg req:OFF act:OFF seq:idle",
-            font=ctk.CTkFont(size=11),
-            text_color="gray70",
-            anchor="e",
-        )
-        self.lbl_looking_debug.grid(row=4, column=1, padx=8, pady=(2, 6), sticky="e")
+        self.deadzone_sld_label = ctk.CTkLabel(self.goals_frame, text=f"Turn Deadzone: {int(self.follow_turn_deadzone_px)} px", font=ctk.CTkFont(size=10))
+        self.deadzone_sld_label.grid(row=3, column=0, columnspan=2, padx=5, pady=(2, 0), sticky="w")
+        self.deadzone_sld = ctk.CTkSlider(self.goals_frame, from_=0, to=140, command=self.update_deadzone_limit)
+        self.deadzone_sld.set(self.follow_turn_deadzone_px)
+        self.deadzone_sld.grid(row=4, column=0, columnspan=2, padx=5, pady=(0, 3), sticky="ew")
         
         self.goals_frame.columnconfigure(0, weight=1)
         self.goals_frame.columnconfigure(1, weight=1)
@@ -272,45 +303,45 @@ class HexVisionApp(ctk.CTk):
 
         # Telemetry Data Frame
         self.telemetry_frame = ctk.CTkFrame(self.right_panel)
-        self.telemetry_frame.pack(fill="both", expand=True, pady=(0, 4))
+        self.telemetry_frame.pack(fill="x", expand=False, pady=(0, 3))
 
-        ctk.CTkLabel(self.telemetry_frame, text="Robot Brain Telemetry", font=ctk.CTkFont(size=14, weight="bold")).pack(pady=4)
+        ctk.CTkLabel(self.telemetry_frame, text="Robot Brain Telemetry", font=ctk.CTkFont(size=12, weight="bold")).pack(pady=3)
 
-        self.lbl_directive = ctk.CTkLabel(self.telemetry_frame, text="CURRENT DIRECTIVE:\n[ STANDBY ]", font=ctk.CTkFont(size=13, weight="bold"), text_color="cyan")
-        self.lbl_directive.pack(pady=6)
+        self.lbl_directive = ctk.CTkLabel(self.telemetry_frame, text="CURRENT DIRECTIVE:\n[ STANDBY ]", font=ctk.CTkFont(size=11, weight="bold"), text_color="cyan")
+        self.lbl_directive.pack(pady=4)
 
-        self.lbl_threat_matrix = ctk.CTkLabel(self.telemetry_frame, text="THREAT MATRIX\nL: 0   |   C: 0   |   R: 0", font=ctk.CTkFont(size=12))
-        self.lbl_threat_matrix.pack(pady=3)
+        self.lbl_threat_matrix = ctk.CTkLabel(self.telemetry_frame, text="THREAT MATRIX\nL: 0   |   C: 0   |   R: 0", font=ctk.CTkFont(size=11))
+        self.lbl_threat_matrix.pack(pady=2)
         
-        self.lbl_perf = ctk.CTkLabel(self.telemetry_frame, text="FPS: 0  |  Objects: 0", font=ctk.CTkFont(size=11))
-        self.lbl_perf.pack(pady=3)
+        self.lbl_perf = ctk.CTkLabel(self.telemetry_frame, text="FPS: 0  |  Objects: 0", font=ctk.CTkFont(size=10))
+        self.lbl_perf.pack(pady=2)
 
-        self.lbl_entities = ctk.CTkLabel(self.telemetry_frame, text="TRACKED ENTITIES:\n- None", justify="left")
-        self.lbl_entities.pack(pady=3, padx=10, anchor="w")
+        self.lbl_entities = ctk.CTkLabel(self.telemetry_frame, text="TRACKED ENTITIES:\n- None", justify="left", font=ctk.CTkFont(size=10))
+        self.lbl_entities.pack(pady=2, padx=8, anchor="w")
 
         # Visualization Frame limits
         self.viz_frame = ctk.CTkFrame(self.right_panel, fg_color="transparent")
-        self.viz_frame.pack(fill="both", expand=True)
+        self.viz_frame.pack(fill="x", expand=False)
 
         # Joystick Frame (Left)
         self.joystick_frame = ctk.CTkFrame(self.viz_frame)
         self.joystick_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
 
-        ctk.CTkLabel(self.joystick_frame, text="Motor Vector", font=ctk.CTkFont(size=13, weight="bold")).pack(pady=4)
+        ctk.CTkLabel(self.joystick_frame, text="Motor Vector", font=ctk.CTkFont(size=11, weight="bold")).pack(pady=3)
 
         # Custom Tkinter Canvas for the Joystick Visual
-        self.canvas_joy = tk.Canvas(self.joystick_frame, width=220, height=220, bg="#2b2b2b", highlightthickness=0)
-        self.canvas_joy.pack(fill="both", expand=True, padx=8, pady=8)
+        self.canvas_joy = tk.Canvas(self.joystick_frame, width=165, height=165, bg="#2b2b2b", highlightthickness=0)
+        self.canvas_joy.pack(fill="both", expand=True, padx=6, pady=6)
         self.canvas_joy.bind("<Configure>", self.on_joy_resize)
 
         # Radar Frame (Right)
         self.radar_frame = ctk.CTkFrame(self.viz_frame)
         self.radar_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
         
-        ctk.CTkLabel(self.radar_frame, text="Predictive Path", font=ctk.CTkFont(size=13, weight="bold")).pack(pady=4)
+        ctk.CTkLabel(self.radar_frame, text="Predictive Path", font=ctk.CTkFont(size=11, weight="bold")).pack(pady=3)
         
-        self.canvas_radar = tk.Canvas(self.radar_frame, width=220, height=220, bg="#111111", highlightthickness=0)
-        self.canvas_radar.pack(fill="both", expand=True, padx=8, pady=8)
+        self.canvas_radar = tk.Canvas(self.radar_frame, width=165, height=165, bg="#111111", highlightthickness=0)
+        self.canvas_radar.pack(fill="both", expand=True, padx=6, pady=6)
         self.canvas_radar.bind("<Configure>", self.on_radar_resize)
 
         self.robot_base_image = None
@@ -320,8 +351,8 @@ class HexVisionApp(ctk.CTk):
         except Exception:
             self.robot_base_image = None
 
-        self.lbl_motor_data = ctk.CTkLabel(self.right_panel, text="Power: 0% | Angle: 0%", font=ctk.CTkFont(size=13, weight="bold"))
-        self.lbl_motor_data.pack(fill="x", pady=(4, 0))
+        self.lbl_motor_data = ctk.CTkLabel(self.right_panel, text="Power: 0% | Angle: 0%", font=ctk.CTkFont(size=11, weight="bold"))
+        self.lbl_motor_data.pack(fill="x", pady=(3, 0))
 
         self.viz_frame.columnconfigure(0, weight=1)
         self.viz_frame.columnconfigure(1, weight=1)
@@ -336,8 +367,15 @@ class HexVisionApp(ctk.CTk):
         if not self.winfo_exists() or not self.output_view.winfo_exists():
             return
 
-        target_w = max(200, self.output_view.winfo_width())
-        target_h = max(140, self.output_view.winfo_height())
+        self.last_live_frame = frame_bgr
+
+        # Use the containing frame's size (fixed height) instead of the label's
+        # current height to avoid a feedback loop where the label's image size
+        # drives its own size growth over repeated updates.
+        frame_w = max(160, self.output_frame.winfo_width())
+        frame_h = max(110, self.output_frame.winfo_height())
+        target_w = frame_w
+        target_h = frame_h
 
         src_h, src_w = frame_bgr.shape[:2]
         if src_w <= 0 or src_h <= 0:
@@ -352,6 +390,19 @@ class HexVisionApp(ctk.CTk):
         x0 = (target_w - new_w) // 2
         y0 = (target_h - new_h) // 2
         canvas[y0:y0 + new_h, x0:x0 + new_w] = resized
+
+        # Deadzone overlay (center band) to visualize follow turn deadzone.
+        deadzone_px = max(0.0, min(float(self.follow_turn_deadzone_px), (src_w / 2.0) - 1.0))
+        if deadzone_px > 0:
+            dz_scaled = max(1, int(deadzone_px * scale))
+            cx = target_w // 2
+            left = max(0, cx - dz_scaled)
+            right = min(target_w - 1, cx + dz_scaled)
+            overlay = canvas.copy()
+            cv2.rectangle(overlay, (left, 0), (right, target_h - 1), (0, 255, 255), -1)
+            canvas = cv2.addWeighted(overlay, 0.18, canvas, 0.82, 0)
+            cv2.line(canvas, (left, 0), (left, target_h - 1), (0, 255, 255), 1)
+            cv2.line(canvas, (right, 0), (right, target_h - 1), (0, 255, 255), 1)
 
         rgb = cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)
         image = Image.fromarray(rgb)
@@ -425,7 +476,7 @@ class HexVisionApp(ctk.CTk):
         if width is None:
             width = self.viz_frame.winfo_width()
 
-        stacked = width < 420
+        stacked = width < 320
         if getattr(self, "_viz_stacked", None) == stacked:
             return
 
@@ -453,10 +504,26 @@ class HexVisionApp(ctk.CTk):
         self.last_turn_mag = turn_mag
 
         if hasattr(self, "joy_radius") and self.canvas_joy.find_withtag("joy_dot"):
+            self.canvas_joy.delete("limit")
+            max_speed = max(0.0, min(self.max_fwd_pct, self.max_rev_pct))
+            max_turn = max(0.0, min(self.max_turn_left_pct, self.max_turn_right_pct))
+            limit_rx = max(2, int(self.joy_radius * max_speed))
+            limit_ry = max(2, int(self.joy_radius * max_turn))
+            self.canvas_joy.create_oval(
+                self.joy_cx - limit_rx,
+                self.joy_cy - limit_ry,
+                self.joy_cx + limit_rx,
+                self.joy_cy + limit_ry,
+                outline="#66aaff",
+                width=2,
+                dash=(4, 3),
+                tags="limit",
+            )
             dot_radius = max(4, int(self.joy_radius * 0.10))
             dot_x = self.joy_cx + int(fwd_mag * self.joy_radius)
             dot_y = self.joy_cy - int(turn_mag * self.joy_radius)
             self.canvas_joy.coords(self.joy_dot, dot_x - dot_radius, dot_y - dot_radius, dot_x + dot_radius, dot_y + dot_radius)
+            self.canvas_joy.tag_raise("joy_dot")
 
         speed_pct = int(-fwd_mag * 100)  # Negative fwd_mag is Forward (+ Speed)
         dir_txt = "Fwd" if speed_pct > 0 else "Rev" if speed_pct < 0 else "Stop"
@@ -518,12 +585,24 @@ class HexVisionApp(ctk.CTk):
         self.target_object = self.entry_target.get().lower().strip()
 
     def update_fwd_limit(self, value):
-        self.max_fwd_pct = max(0.0, float(value) / 100.0)
-        self.fwd_sld_label.configure(text=f"Max Forward Speed: {int(value)}%")
+        limit = max(0.0, float(value) / 100.0)
+        self.max_fwd_pct = limit
+        self.max_rev_pct = limit
+        self.fwd_sld_label.configure(text=f"Max Speed: {int(value)}%")
+        self.render_motion_visuals(self.last_fwd_mag, self.last_turn_mag)
 
-    def update_rev_limit(self, value):
-        self.max_rev_pct = max(0.0, float(value) / 100.0)
-        self.rev_sld_label.configure(text=f"Max Reverse Speed: {int(value)}%")
+    def update_deadzone_limit(self, value):
+        self.follow_turn_deadzone_px = max(0.0, float(value))
+        self.deadzone_sld_label.configure(text=f"Turn Deadzone: {int(value)} px")
+        if self.last_live_frame is not None:
+            self.update_live_output(self.last_live_frame)
+
+    def update_turn_limit(self, value):
+        limit = max(0.0, min(1.0, float(value) / 100.0))
+        self.max_turn_left_pct = limit
+        self.max_turn_right_pct = limit
+        self.turn_sld_label.configure(text=f"Max Turn: {int(value)}%")
+        self.render_motion_visuals(self.last_fwd_mag, self.last_turn_mag)
 
     def toggle_looking_mode(self):
         self.looking_mode_requested = bool(self.chk_looking.get())
@@ -854,8 +933,35 @@ class HexVisionApp(ctk.CTk):
         except Exception:
             self.mouse_left_is_down = False
 
-    def toggle_controller(self):
-        self.translate_motion = bool(self.chk_controller.get())
+    def update_autonomy_visual(self):
+        enabled = bool(self.autonomy_enabled.get())
+        if enabled:
+            self.autonomy_btn.configure(
+                text="Autonomous Input: ON",
+                fg_color="#1f6f3d",
+                hover_color="#2a8a4b",
+                text_color="white",
+                border_width=2,
+                border_color="#33c26b",
+            )
+        else:
+            self.autonomy_btn.configure(
+                text="Autonomous Input: OFF",
+                fg_color="#2b2f36",
+                hover_color="#3a3f48",
+                text_color="#e0e0e0",
+                border_width=2,
+                border_color="#5a5f68",
+            )
+
+    def toggle_controller(self, force=None):
+        if force is None:
+            enabled = not self.autonomy_enabled.get()
+        else:
+            enabled = bool(force)
+        self.autonomy_enabled.set(enabled)
+        self.translate_motion = enabled
+        self.update_autonomy_visual()
         if self.translate_motion:
             self.mouse_hold_arm_time = time.time() + self.mouse_hold_delay_sec
             self.set_mouse_hold(False)
@@ -929,10 +1035,7 @@ class HexVisionApp(ctk.CTk):
             if esc_down and not esc_was_down:
                 if self.translate_motion:
                     print("Escape detected: disabling mouse translation.")
-                    self.translate_motion = False
-                    self.mouse_hold_arm_time = None
-                    self.set_mouse_hold(False)
-                    self.after(0, self.chk_controller.deselect)
+                    self.toggle_controller(False)
             esc_was_down = esc_down
                 
             # Measure FPS
@@ -945,6 +1048,7 @@ class HexVisionApp(ctk.CTk):
             frame_scale = max(0.5, min(2.0, frame_dt * 30.0))
             
             detected_objects = []
+            person_boxes = []
             
             # Capture RGB screen
             rgb_screenshot = sct.grab(self.rgb_monitor)
@@ -966,7 +1070,7 @@ class HexVisionApp(ctk.CTk):
             target_cx = None
             target_depth = None
             target_cy = None
-            target_center_error = float("inf")
+            target_best_key = None
 
             # Always run person-only inference so live output consistently shows boxes.
             results = self.model(
@@ -1042,17 +1146,29 @@ class HexVisionApp(ctk.CTk):
                     )
 
                     detected_objects.append(label_text)
+                    person_boxes.append((x1, y1, x2, y2, box_color))
 
-                    # Pick the detection closest to screen center for stable follow.
+                    # Prioritize the closest person: depth when available, bbox area otherwise.
                     center_error = abs(cX - (frame_w * 0.5))
-                    if center_error < target_center_error:
-                        target_center_error = center_error
+                    box_area = float((x2 - x1) * (y2 - y1))
+                    has_depth_signal = 1 if mean_depth > 0 else 0
+                    proximity_score = float(mean_depth) if has_depth_signal else box_area
+                    candidate_key = (has_depth_signal, proximity_score, -center_error)
+
+                    if target_best_key is None or candidate_key > target_best_key:
+                        target_best_key = candidate_key
                         target_cx = cX
                         target_cy = cY
                         target_depth = mean_depth
 
             if target_cx is not None and target_cy is not None:
                 cv2.circle(frame, (target_cx, target_cy), 5, (255, 0, 255), -1)
+
+            if person_boxes:
+                aim_x = int(target_cx) if target_cx is not None else (frame_w // 2)
+                for x1, y1, x2, y2, box_color in person_boxes:
+                    line_x = max(x1, min(x2, aim_x))
+                    cv2.line(frame, (line_x, y1), (line_x, y2), box_color, 2)
 
             # === ROBOT BRAIN (LIVE COMMAND INTERPRETER) ===
             height_f, width_f = frame.shape[:2]
@@ -1111,7 +1227,7 @@ class HexVisionApp(ctk.CTk):
                         last_follow_seen_time = curr_time
                         persisted_target_offset_px = raw_offset
                         
-                        want_looking_mode = self.looking_mode_requested or (target_depth is not None and target_depth >= self.super_close_threshold)
+                        want_looking_mode = self.looking_mode_requested
 
                         if want_looking_mode:
                             # Looking mode: run hold->UV->rear->ZW sequence, then look only with turn.
@@ -1122,7 +1238,7 @@ class HexVisionApp(ctk.CTk):
                             if not seq_ready:
                                 turn_mag = 0.0
                         else:
-                            # Not super close: exit sequence (hold off -> tripod), then normal follow.
+                            # Looking mode is not requested: exit sequence (hold off -> tripod), then normal follow.
                             exit_done, exit_text, exit_color = self.run_follow_exit_sequence()
                             if not exit_done:
                                 base_fwd_mag = 0.0
@@ -1278,8 +1394,8 @@ class HexVisionApp(ctk.CTk):
                     action_color = (150, 150, 150)
                     prev_follow_turn_cmd = 0.0
 
-            # Global turn clamp: limit steering authority to 50%.
-            turn_mag = max(-self.max_turn_pct, min(self.max_turn_pct, turn_mag))
+            # Global turn clamp: apply asymmetric max left/right steering limits.
+            turn_mag = max(-self.max_turn_left_pct, min(self.max_turn_right_pct, turn_mag))
 
             # Update the Tkinter Telemetry Dashboard safely
             b_color_tk = "green"
