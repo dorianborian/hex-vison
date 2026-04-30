@@ -128,17 +128,17 @@ class HexVisionApp(ctk.CTk):
 
     def setup_ui(self):
         self.main_container = ctk.CTkFrame(self, fg_color="transparent")
-        self.main_container.pack(fill="both", expand=True, padx=4, pady=4)
+        self.main_container.pack(fill="both", expand=True, padx=3, pady=3)
         self.main_container.grid_columnconfigure(0, weight=1)
         self.main_container.grid_columnconfigure(1, weight=1)
         self.main_container.grid_rowconfigure(1, weight=1)
 
-        self.label = ctk.CTkLabel(self.main_container, text="Hex-Vision Object Tracker", font=ctk.CTkFont(size=16, weight="bold"))
-        self.label.grid(row=0, column=0, columnspan=2, padx=6, pady=(2, 4), sticky="ew")
+        self.label = ctk.CTkLabel(self.main_container, text="Hex-Vision Object Tracker", font=ctk.CTkFont(size=15, weight="bold"))
+        self.label.grid(row=0, column=0, columnspan=2, padx=6, pady=(2, 3), sticky="ew")
 
         # Bottom dashboard area split into left/right columns
         self.bottom_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
-        self.bottom_frame.grid(row=1, column=0, columnspan=2, padx=6, pady=(0, 2), sticky="nsew")
+        self.bottom_frame.grid(row=1, column=0, columnspan=2, padx=4, pady=(0, 1), sticky="nsew")
         self.bottom_frame.grid_columnconfigure(0, weight=1)
         self.bottom_frame.grid_columnconfigure(1, weight=1)
         self.bottom_frame.grid_rowconfigure(0, weight=1)
@@ -166,156 +166,157 @@ class HexVisionApp(ctk.CTk):
 
         # Region Frame
         self.region_frame = ctk.CTkFrame(self.left_panel)
-        self.region_frame.pack(fill="x", pady=(0, 3))
+        self.region_frame.pack(fill="x", pady=(0, 2))
 
-        self.rgb_region_label = ctk.CTkLabel(self.region_frame, text=f"RGB Zone: {self.rgb_monitor['width']}x{self.rgb_monitor['height']} at ({self.rgb_monitor['left']}, {self.rgb_monitor['top']})", font=ctk.CTkFont(size=11))
-        self.rgb_region_label.pack(pady=(3, 1))
+        self.rgb_region_label = ctk.CTkLabel(self.region_frame, text=f"RGB Zone: {self.rgb_monitor['width']}x{self.rgb_monitor['height']} at ({self.rgb_monitor['left']}, {self.rgb_monitor['top']})", font=ctk.CTkFont(size=10))
+        self.rgb_region_label.pack(pady=(2, 0))
 
-        self.btn_set_rgb = ctk.CTkButton(self.region_frame, text="Set RGB Camera Zone", command=self.set_rgb_region, height=26)
-        self.btn_set_rgb.pack(pady=2)
+        self.btn_set_rgb = ctk.CTkButton(self.region_frame, text="Set RGB Camera Zone", command=self.set_rgb_region, height=24)
+        self.btn_set_rgb.pack(pady=1)
 
-        self.depth_region_label = ctk.CTkLabel(self.region_frame, text="Depth Zone: Not Set", font=ctk.CTkFont(size=11))
-        self.depth_region_label.pack(pady=(2, 1))
+        self.depth_region_label = ctk.CTkLabel(self.region_frame, text="Depth Zone: Not Set", font=ctk.CTkFont(size=10))
+        self.depth_region_label.pack(pady=(1, 0))
 
-        self.btn_set_depth = ctk.CTkButton(self.region_frame, text="Set Depth Camera Zone", command=self.set_depth_region, height=26)
-        self.btn_set_depth.pack(pady=2)
+        self.btn_set_depth = ctk.CTkButton(self.region_frame, text="Set Depth Camera Zone", command=self.set_depth_region, height=24)
+        self.btn_set_depth.pack(pady=1)
         
-        self.btn_set_controller = ctk.CTkButton(self.region_frame, text="Set Controller Output Region", command=self.set_controller_region, height=26)
-        self.btn_set_controller.pack(pady=2)
+        self.btn_set_controller = ctk.CTkButton(self.region_frame, text="Set Controller Output Region", command=self.set_controller_region, height=24)
+        self.btn_set_controller.pack(pady=1)
 
         self.spot_table = ctk.CTkFrame(self.region_frame)
-        self.spot_table.pack(fill="x", padx=6, pady=(4, 3))
+        self.spot_table.pack(fill="x", padx=5, pady=(3, 2))
         self.spot_table.columnconfigure(0, weight=1)
         self.spot_table.columnconfigure(1, weight=0)
         self.spot_table.columnconfigure(2, weight=1)
         self.spot_table.columnconfigure(3, weight=0)
 
-        ctk.CTkLabel(self.spot_table, text="Spot Setup", font=ctk.CTkFont(size=11, weight="bold")).grid(row=0, column=0, columnspan=4, pady=(3, 3), sticky="w")
+        ctk.CTkLabel(self.spot_table, text="Spot Setup", font=ctk.CTkFont(size=10, weight="bold")).grid(row=0, column=0, columnspan=4, pady=(2, 2), sticky="w")
 
-        self.lbl_uv_spot = ctk.CTkLabel(self.spot_table, text="UV Spot: Not Set", anchor="w", font=ctk.CTkFont(size=11))
+        self.lbl_uv_spot = ctk.CTkLabel(self.spot_table, text="UV Spot: Not Set", anchor="w", font=ctk.CTkFont(size=10))
         self.lbl_uv_spot.grid(row=1, column=0, padx=(4, 4), pady=1, sticky="ew")
-        self.btn_set_uv_spot = ctk.CTkButton(self.spot_table, text="Set", width=52, height=24, command=self.set_uv_spot)
+        self.btn_set_uv_spot = ctk.CTkButton(self.spot_table, text="Set", width=48, height=22, command=self.set_uv_spot)
         self.btn_set_uv_spot.grid(row=1, column=1, padx=(0, 6), pady=1)
 
-        self.lbl_tripod_spot = ctk.CTkLabel(self.spot_table, text="Tripod Spot: Not Set", anchor="w", font=ctk.CTkFont(size=11))
+        self.lbl_tripod_spot = ctk.CTkLabel(self.spot_table, text="Tripod Spot: Not Set", anchor="w", font=ctk.CTkFont(size=10))
         self.lbl_tripod_spot.grid(row=1, column=2, padx=(4, 4), pady=1, sticky="ew")
-        self.btn_set_tripod_spot = ctk.CTkButton(self.spot_table, text="Set", width=52, height=24, command=self.set_tripod_spot)
+        self.btn_set_tripod_spot = ctk.CTkButton(self.spot_table, text="Set", width=48, height=22, command=self.set_tripod_spot)
         self.btn_set_tripod_spot.grid(row=1, column=3, padx=(0, 4), pady=1)
 
-        self.lbl_hold_pos_spot = ctk.CTkLabel(self.spot_table, text="Hold Position: Not Set", anchor="w", font=ctk.CTkFont(size=11))
+        self.lbl_hold_pos_spot = ctk.CTkLabel(self.spot_table, text="Hold Position: Not Set", anchor="w", font=ctk.CTkFont(size=10))
         self.lbl_hold_pos_spot.grid(row=2, column=0, padx=(4, 4), pady=1, sticky="ew")
-        self.btn_set_hold_pos_spot = ctk.CTkButton(self.spot_table, text="Set", width=52, height=24, command=self.set_hold_position_spot)
+        self.btn_set_hold_pos_spot = ctk.CTkButton(self.spot_table, text="Set", width=48, height=22, command=self.set_hold_position_spot)
         self.btn_set_hold_pos_spot.grid(row=2, column=1, padx=(0, 6), pady=1)
 
-        self.lbl_rear_spot = ctk.CTkLabel(self.spot_table, text="Rear-most: Not Set", anchor="w", font=ctk.CTkFont(size=11))
+        self.lbl_rear_spot = ctk.CTkLabel(self.spot_table, text="Rear-most: Not Set", anchor="w", font=ctk.CTkFont(size=10))
         self.lbl_rear_spot.grid(row=2, column=2, padx=(4, 4), pady=1, sticky="ew")
-        self.btn_set_rear_spot = ctk.CTkButton(self.spot_table, text="Set", width=52, height=24, command=self.set_rear_most_spot)
+        self.btn_set_rear_spot = ctk.CTkButton(self.spot_table, text="Set", width=48, height=22, command=self.set_rear_most_spot)
         self.btn_set_rear_spot.grid(row=2, column=3, padx=(0, 4), pady=1)
 
-        self.lbl_zw_spot = ctk.CTkLabel(self.spot_table, text="ZW Spot: Not Set", anchor="w", font=ctk.CTkFont(size=11))
-        self.lbl_zw_spot.grid(row=3, column=0, padx=(4, 4), pady=(1, 4), sticky="ew")
-        self.btn_set_zw_spot = ctk.CTkButton(self.spot_table, text="Set", width=52, height=24, command=self.set_zw_spot)
-        self.btn_set_zw_spot.grid(row=3, column=1, padx=(0, 6), pady=(1, 4))
+        self.lbl_zw_spot = ctk.CTkLabel(self.spot_table, text="ZW Spot: Not Set", anchor="w", font=ctk.CTkFont(size=10))
+        self.lbl_zw_spot.grid(row=3, column=0, padx=(4, 4), pady=(1, 2), sticky="ew")
+        self.btn_set_zw_spot = ctk.CTkButton(self.spot_table, text="Set", width=48, height=22, command=self.set_zw_spot)
+        self.btn_set_zw_spot.grid(row=3, column=1, padx=(0, 6), pady=(1, 2))
 
-        self.lbl_focus_spot = ctk.CTkLabel(self.spot_table, text="Focus Window: Not Set", anchor="w", font=ctk.CTkFont(size=11))
-        self.lbl_focus_spot.grid(row=3, column=2, padx=(4, 4), pady=(1, 4), sticky="ew")
-        self.btn_set_focus_spot = ctk.CTkButton(self.spot_table, text="Set", width=52, height=24, command=self.set_focus_window_spot)
-        self.btn_set_focus_spot.grid(row=3, column=3, padx=(0, 4), pady=(1, 4))
+        self.lbl_focus_spot = ctk.CTkLabel(self.spot_table, text="Focus Window: Not Set", anchor="w", font=ctk.CTkFont(size=10))
+        self.lbl_focus_spot.grid(row=3, column=2, padx=(4, 4), pady=(1, 2), sticky="ew")
+        self.btn_set_focus_spot = ctk.CTkButton(self.spot_table, text="Set", width=48, height=22, command=self.set_focus_window_spot)
+        self.btn_set_focus_spot.grid(row=3, column=3, padx=(0, 4), pady=(1, 2))
 
-        self.btn_save_spots = ctk.CTkButton(self.spot_table, text="Save Spots", height=26, command=self.save_spots)
-        self.btn_save_spots.grid(row=4, column=0, columnspan=4, padx=4, pady=(1, 4), sticky="ew")
+        self.btn_save_spots = ctk.CTkButton(self.spot_table, text="Save Spots", height=24, command=self.save_spots)
+        self.btn_save_spots.grid(row=4, column=0, columnspan=4, padx=4, pady=(1, 3), sticky="ew")
 
         # Control Frame
         self.control_frame = ctk.CTkFrame(self.left_panel)
-        self.control_frame.pack(fill="x", pady=(0, 3))
+        self.control_frame.pack(fill="x", pady=(0, 2))
 
         self.autonomy_frame = ctk.CTkFrame(self.control_frame, fg_color="#1c2b3a")
-        self.autonomy_frame.pack(fill="x", padx=4, pady=(4, 2))
+        self.autonomy_frame.pack(fill="x", padx=3, pady=(3, 1))
         self.autonomy_frame.columnconfigure(0, weight=1)
 
         self.autonomy_title = ctk.CTkLabel(
             self.autonomy_frame,
             text="Autonomy",
-            font=ctk.CTkFont(size=11, weight="bold"),
+            font=ctk.CTkFont(size=10, weight="bold"),
             text_color="#c9d6e6",
         )
-        self.autonomy_title.grid(row=0, column=0, padx=8, pady=(6, 2), sticky="w")
+        self.autonomy_title.grid(row=0, column=0, padx=6, pady=(4, 1), sticky="w")
 
         self.autonomy_btn = ctk.CTkButton(
             self.autonomy_frame,
             text="Autonomous Input: OFF",
             command=self.toggle_controller,
-            font=ctk.CTkFont(size=12, weight="bold"),
-            height=40,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            height=32,
             corner_radius=4,
         )
-        self.autonomy_btn.grid(row=1, column=0, padx=8, pady=(0, 6), sticky="ew")
+        self.autonomy_btn.grid(row=1, column=0, padx=6, pady=(0, 4), sticky="ew")
         self.update_autonomy_visual()
 
         self.lbl_looking_debug = ctk.CTkLabel(
             self.autonomy_frame,
             text="dbg req:OFF act:OFF seq:idle",
-            font=ctk.CTkFont(size=10),
+            font=ctk.CTkFont(size=9),
             text_color="gray70",
             anchor="e",
         )
-        self.lbl_looking_debug.grid(row=2, column=0, padx=8, pady=(0, 6), sticky="e")
+        self.lbl_looking_debug.grid(row=2, column=0, padx=6, pady=(0, 4), sticky="e")
 
-        self.btn_start = ctk.CTkButton(self.control_frame, text="Start Vision", fg_color="green", hover_color="darkgreen", height=28, command=self.start_vision)
-        self.btn_start.pack(side="left", padx=4, pady=4, expand=True)
+        self.btn_start = ctk.CTkButton(self.control_frame, text="Start Vision", fg_color="green", hover_color="darkgreen", height=24, command=self.start_vision)
+        self.btn_start.pack(side="left", padx=4, pady=3, expand=True)
 
-        self.btn_stop = ctk.CTkButton(self.control_frame, text="Stop Vision", fg_color="red", hover_color="darkred", state="disabled", height=28, command=self.stop_vision)
-        self.btn_stop.pack(side="right", padx=4, pady=4, expand=True)
+        self.btn_stop = ctk.CTkButton(self.control_frame, text="Stop Vision", fg_color="red", hover_color="darkred", state="disabled", height=24, command=self.stop_vision)
+        self.btn_stop.pack(side="right", padx=4, pady=3, expand=True)
 
         # Robot Goals Frame
         self.goals_frame = ctk.CTkFrame(self.left_panel)
         self.goals_frame.pack(fill="x")
         
-        ctk.CTkLabel(self.goals_frame, text="Robot Goals & Directives", font=ctk.CTkFont(size=11, weight="bold")).grid(row=0, column=0, columnspan=2, pady=2)
+        ctk.CTkLabel(self.goals_frame, text="Robot Goals & Directives", font=ctk.CTkFont(size=10, weight="bold")).grid(row=0, column=0, columnspan=2, pady=1)
         
         self.goal_var = ctk.StringVar(value="Follow Object")
         self.opt_goal = ctk.CTkOptionMenu(self.goals_frame, variable=self.goal_var, 
                                           values=["Avoid All Objects", "Follow Object", "Search for Object"], 
-                                          command=self.set_active_goal, height=26)
-        self.opt_goal.grid(row=1, column=0, padx=5, pady=2, sticky="ew")
+                                          command=self.set_active_goal, height=24)
+        self.opt_goal.grid(row=1, column=0, padx=5, pady=1, sticky="ew")
         
-        self.entry_target = ctk.CTkEntry(self.goals_frame, placeholder_text="Target Object/Class (e.g. person)", height=26)
+        self.entry_target = ctk.CTkEntry(self.goals_frame, placeholder_text="Target Object/Class (e.g. person)", height=24)
         self.entry_target.insert(0, "person")
         self.entry_target.configure(state="disabled")
-        self.entry_target.grid(row=1, column=1, padx=5, pady=2, sticky="ew")
+        self.entry_target.grid(row=1, column=1, padx=5, pady=1, sticky="ew")
         
         self.motion_limits_frame = ctk.CTkFrame(self.goals_frame, fg_color="transparent")
-        self.motion_limits_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=(2, 2), sticky="ew")
+        self.motion_limits_frame.grid(row=2, column=0, columnspan=2, padx=5, pady=(1, 1), sticky="ew")
         self.motion_limits_frame.columnconfigure(0, weight=1)
         self.motion_limits_frame.columnconfigure(1, weight=1)
 
         # Motion limits (speed + turn)
-        self.fwd_sld_label = ctk.CTkLabel(self.motion_limits_frame, text="Max Speed: 100%", font=ctk.CTkFont(size=10))
+        self.fwd_sld_label = ctk.CTkLabel(self.motion_limits_frame, text="Max Speed: 100%", font=ctk.CTkFont(size=9))
         self.fwd_sld_label.grid(row=0, column=0, padx=(0, 6), pady=(0, 0), sticky="w")
-        self.turn_sld_label = ctk.CTkLabel(self.motion_limits_frame, text=f"Max Turn: {int(self.max_turn_left_pct * 100)}%", font=ctk.CTkFont(size=10))
+        self.turn_sld_label = ctk.CTkLabel(self.motion_limits_frame, text=f"Max Turn: {int(self.max_turn_left_pct * 100)}%", font=ctk.CTkFont(size=9))
         self.turn_sld_label.grid(row=0, column=1, padx=(6, 0), pady=(0, 0), sticky="w")
 
         self.fwd_sld = ctk.CTkSlider(self.motion_limits_frame, from_=0, to=100, command=self.update_fwd_limit)
         self.fwd_sld.set(100)
-        self.fwd_sld.grid(row=1, column=0, padx=(0, 6), pady=(2, 0), sticky="ew")
+        self.fwd_sld.grid(row=1, column=0, padx=(0, 6), pady=(1, 0), sticky="ew")
 
         self.turn_sld = ctk.CTkSlider(self.motion_limits_frame, from_=0, to=100, command=self.update_turn_limit)
         self.turn_sld.set(self.max_turn_left_pct * 100)
-        self.turn_sld.grid(row=1, column=1, padx=(6, 0), pady=(2, 0), sticky="ew")
+        self.turn_sld.grid(row=1, column=1, padx=(6, 0), pady=(1, 0), sticky="ew")
 
-        self.deadzone_sld_label = ctk.CTkLabel(self.goals_frame, text=f"Turn Deadzone: {int(self.follow_turn_deadzone_px)} px", font=ctk.CTkFont(size=10))
-        self.deadzone_sld_label.grid(row=3, column=0, columnspan=2, padx=5, pady=(2, 0), sticky="w")
+        self.deadzone_sld_label = ctk.CTkLabel(self.goals_frame, text=f"Turn Deadzone: {int(self.follow_turn_deadzone_px)} px", font=ctk.CTkFont(size=9))
+        self.deadzone_sld_label.grid(row=3, column=0, columnspan=2, padx=5, pady=(1, 0), sticky="w")
         self.deadzone_sld = ctk.CTkSlider(self.goals_frame, from_=0, to=140, command=self.update_deadzone_limit)
         self.deadzone_sld.set(self.follow_turn_deadzone_px)
-        self.deadzone_sld.grid(row=4, column=0, columnspan=2, padx=5, pady=(0, 3), sticky="ew")
+        self.deadzone_sld.grid(row=4, column=0, columnspan=2, padx=5, pady=(0, 2), sticky="ew")
 
         self.persist_turn_only_chk = ctk.CTkCheckBox(
             self.goals_frame,
             text="Persistence: Turn Only",
             variable=self.persist_turn_only,
             command=self.on_persist_mode_toggle,
+            font=ctk.CTkFont(size=10),
         )
-        self.persist_turn_only_chk.grid(row=5, column=0, columnspan=2, padx=5, pady=(0, 4), sticky="w")
+        self.persist_turn_only_chk.grid(row=5, column=0, columnspan=2, padx=5, pady=(0, 3), sticky="w")
         
         self.goals_frame.columnconfigure(0, weight=1)
         self.goals_frame.columnconfigure(1, weight=1)
@@ -696,23 +697,27 @@ class HexVisionApp(ctk.CTk):
         self.wait_window(selector)
         self.deiconify()
 
-    def set_rgb_camera_device(self):
-        device_index = simpledialog.askinteger(
-            "RGB Camera Device",
-            "Enter camera device index (0, 1, 2, ...):",
-            parent=self,
-            initialvalue=self.rgb_device_index,
-            minvalue=0,
-            maxvalue=16,
+    @staticmethod
+    def _region_center(region):
+        return (
+            int(region["left"] + (region["width"] // 2)),
+            int(region["top"] + (region["height"] // 2)),
+        )
+
+    @staticmethod
     def _spot_to_list(spot):
         if spot is None:
+            return None
+        return [int(spot[0]), int(spot[1])]
 
     @staticmethod
     def _list_to_spot(value):
         if not isinstance(value, (list, tuple)) or len(value) != 2:
             return None
         try:
+            return (int(value[0]), int(value[1]))
         except (TypeError, ValueError):
+            return None
 
     def get_spots_file_path(self):
         return os.path.join(os.path.dirname(os.path.abspath(__file__)), "saved_spots.json")
@@ -1002,17 +1007,13 @@ class HexVisionApp(ctk.CTk):
 
     def start_vision(self):
         self.load_model()
-        if not self.open_captures():
-            return
         self.is_running = True
         self.follow_look_state = "idle"
         self.follow_cleanup_state = "idle"
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="normal")
         self.btn_set_rgb.configure(state="disabled")
-        self.btn_set_rgb_camera.configure(state="disabled")
         self.btn_set_depth.configure(state="disabled")
-        self.btn_set_depth_camera.configure(state="disabled")
 
         self.capture_thread = threading.Thread(target=self.vision_loop)
         self.capture_thread.daemon = True
@@ -1075,13 +1076,14 @@ class HexVisionApp(ctk.CTk):
             
             # Capture RGB screen
             rgb_screenshot = sct.grab(self.rgb_monitor)
-            frame = np.asarray(rgb_screenshot)[:, :, :3]
+            frame_bgra = np.array(rgb_screenshot, dtype=np.uint8)
+            frame = cv2.cvtColor(frame_bgra, cv2.COLOR_BGRA2BGR)
             
             # Capture Depth screen if configured
             depth_frame = None
             if self.depth_monitor:
                 depth_screenshot = sct.grab(self.depth_monitor)
-                depth_frame_bgra = np.asarray(depth_screenshot)
+                depth_frame_bgra = np.array(depth_screenshot, dtype=np.uint8)
                 # Convert Depth to grayscale using RED channel for screen capture.
                 depth_frame = depth_frame_bgra[:, :, 2]
 
