@@ -76,7 +76,7 @@ class HexVisionApp(ctk.CTk):
         self.mode_click_cooldown_sec = 0.6
         self.last_mode_click_time = 0.0
         self.turn_comp_gain = 0.55
-        self.follow_persist_sec = 0.45
+        self.follow_persist_sec = 5.0
         self.follow_turn_deadzone_px = 40.0
         self.follow_turn_gain = 1.30
         self.follow_turn_min_cmd = 0.06
@@ -1309,14 +1309,10 @@ class HexVisionApp(ctk.CTk):
                             turn_mag = self.compute_follow_turn(predicted_comp_offset, half_width, prev_follow_turn_cmd, frame_scale)
                             decay = self.follow_persist_decay ** frame_scale
                             turn_mag *= decay
-                            if self.persist_turn_only.get():
-                                fwd_mag = 0.0
-                            else:
-                                fwd_mag = max(-0.25, min(0.25, persisted_follow_fwd * decay))
+                            fwd_mag = 0.0
                             prev_follow_turn_cmd = turn_mag
 
-                            action_mode = "TURN ONLY" if self.persist_turn_only.get() else "MOVE"
-                            action = f"PERSISTING ({action_mode}): {self.target_object.upper()}"
+                            action = f"PERSISTING (TURN ONLY): {self.target_object.upper()}"
                             action_color = (0, 255, 255)
                         else:
                             action = f"WAITING FOR: {self.target_object.upper()}"
