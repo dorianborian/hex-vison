@@ -1044,6 +1044,7 @@ class HexVisionApp(ctk.CTk):
         persisted_target_offset_px = 0.0
         persisted_follow_fwd = 0.0
         prev_follow_turn_cmd = 0.0
+        last_seen_turn_sign = 0.0
         
         # Load ctypes for global Escape monitor
         try:
@@ -1250,6 +1251,7 @@ class HexVisionApp(ctk.CTk):
                         turn_mag = self.compute_follow_turn(compensated_offset, half_width, prev_follow_turn_cmd, frame_scale)
                         last_follow_seen_time = curr_time
                         persisted_target_offset_px = raw_offset
+                        last_seen_turn_sign = 1.0 if raw_offset >= 0 else -1.0
                         
                         want_looking_mode = self.looking_mode_requested
 
@@ -1306,9 +1308,10 @@ class HexVisionApp(ctk.CTk):
                             persisted_target_offset_px = max(-half_width, min(half_width, persisted_target_offset_px))
 
                             predicted_comp_offset = persisted_target_offset_px + (smoothed_turn * half_width * self.turn_comp_gain)
-                            turn_mag = self.compute_follow_turn(predicted_comp_offset, half_width, prev_follow_turn_cmd, frame_scale)
-                            decay = self.follow_persist_decay ** frame_scale
-                            turn_mag *= decay
+                            if last_seen_turn_sign != 0.0:
+                                turn_mag = self.max_turn_right_pct if last_seen_turn_sign > 0 else -self.max_turn_left_pct
+                            else:
+                                turn_mag = self.max_turn_right_pct if predicted_comp_offset >= 0 else -self.max_turn_left_pct
                             fwd_mag = 0.0
                             prev_follow_turn_cmd = turn_mag
 
