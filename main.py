@@ -84,6 +84,7 @@ class HexVisionApp(ctk.CTk):
         self.follow_persist_decay = 0.86
         self.autonomy_enabled = ctk.BooleanVar(value=False)
         self.last_live_frame = None
+        self.persist_turn_only = ctk.BooleanVar(value=False)
 
         # Capture sources
         self.rgb_source = "screen"  # screen | camera
@@ -330,6 +331,14 @@ class HexVisionApp(ctk.CTk):
         self.deadzone_sld = ctk.CTkSlider(self.goals_frame, from_=0, to=140, command=self.update_deadzone_limit)
         self.deadzone_sld.set(self.follow_turn_deadzone_px)
         self.deadzone_sld.grid(row=4, column=0, columnspan=2, padx=5, pady=(0, 3), sticky="ew")
+
+        self.persist_turn_only_chk = ctk.CTkCheckBox(
+            self.goals_frame,
+            text="Persistence: Turn Only",
+            variable=self.persist_turn_only,
+            command=self.on_persist_mode_toggle,
+        )
+        self.persist_turn_only_chk.grid(row=5, column=0, columnspan=2, padx=5, pady=(0, 4), sticky="w")
         
         self.goals_frame.columnconfigure(0, weight=1)
         self.goals_frame.columnconfigure(1, weight=1)
@@ -641,6 +650,9 @@ class HexVisionApp(ctk.CTk):
     def toggle_looking_mode(self):
         self.looking_mode_requested = bool(self.chk_looking.get())
         self.update_looking_debug_line()
+
+    def on_persist_mode_toggle(self):
+        pass
 
     def set_looking_mode(self, enabled):
         enabled = bool(enabled)
@@ -1424,10 +1436,14 @@ class HexVisionApp(ctk.CTk):
                             turn_mag = self.compute_follow_turn(predicted_comp_offset, half_width, prev_follow_turn_cmd, frame_scale)
                             decay = self.follow_persist_decay ** frame_scale
                             turn_mag *= decay
-                            fwd_mag = max(-0.25, min(0.25, persisted_follow_fwd * decay))
+                            if self.persist_turn_only.get():
+                                fwd_mag = 0.0
+                            else:
+                                fwd_mag = max(-0.25, min(0.25, persisted_follow_fwd * decay))
                             prev_follow_turn_cmd = turn_mag
 
-                            action = f"PERSISTING: {self.target_object.upper()}"
+                            action_mode = "TURN ONLY" if self.persist_turn_only.get() else "MOVE"
+                            action = f"PERSISTING ({action_mode}): {self.target_object.upper()}"
                             action_color = (0, 255, 255)
                         else:
                             action = f"WAITING FOR: {self.target_object.upper()}"
