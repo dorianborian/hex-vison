@@ -82,6 +82,7 @@ class HexVisionApp(ctk.CTk):
         self.follow_turn_min_cmd = 0.06
         self.follow_turn_rate_limit = 0.18
         self.follow_persist_decay = 0.86
+        self.follow_persist_turn_boost = 0.80
         self.autonomy_enabled = ctk.BooleanVar(value=False)
         self.last_live_frame = None
         self.persist_turn_only = ctk.BooleanVar(value=False)
@@ -1055,6 +1056,7 @@ class HexVisionApp(ctk.CTk):
         esc_was_down = False
 
         while self.is_running:
+            persist_turn_boost_active = False
             # Global Escape disables mouse translation without exiting the app.
             esc_down = bool(user32 and (user32.GetAsyncKeyState(0x1B) & 0x8000))
             if esc_down and not esc_was_down:
@@ -1309,9 +1311,10 @@ class HexVisionApp(ctk.CTk):
 
                             predicted_comp_offset = persisted_target_offset_px + (smoothed_turn * half_width * self.turn_comp_gain)
                             if last_seen_turn_sign != 0.0:
-                                turn_mag = self.max_turn_right_pct if last_seen_turn_sign > 0 else -self.max_turn_left_pct
+                                turn_mag = self.follow_persist_turn_boost if last_seen_turn_sign > 0 else -self.follow_persist_turn_boost
                             else:
-                                turn_mag = self.max_turn_right_pct if predicted_comp_offset >= 0 else -self.max_turn_left_pct
+                                turn_mag = self.follow_persist_turn_boost if predicted_comp_offset >= 0 else -self.follow_persist_turn_boost
+                            persist_turn_boost_active = True
                             fwd_mag = 0.0
                             prev_follow_turn_cmd = turn_mag
 
@@ -1422,7 +1425,10 @@ class HexVisionApp(ctk.CTk):
                     prev_follow_turn_cmd = 0.0
 
             # Global turn clamp: apply asymmetric max left/right steering limits.
-            turn_mag = max(-self.max_turn_left_pct, min(self.max_turn_right_pct, turn_mag))
+            if persist_turn_boost_active:
+                turn_mag = max(-self.follow_persist_turn_boost, min(self.follow_persist_turn_boost, turn_mag))
+            else:
+                turn_mag = max(-self.max_turn_left_pct, min(self.max_turn_right_pct, turn_mag))
 
             # Update the Tkinter Telemetry Dashboard safely
             b_color_tk = "green"
