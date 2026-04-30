@@ -57,6 +57,11 @@ class RegionSelector(tk.Toplevel):
 class HexVisionApp(ctk.CTk):
     def __init__(self):
         super().__init__()
+        cv2.setUseOptimized(True)
+        try:
+            cv2.ocl.setUseOpenCL(True)
+        except Exception:
+            pass
         self.title("Hex-Vision")
         self.geometry("800x800")
         self.resizable(False, False)
@@ -79,6 +84,23 @@ class HexVisionApp(ctk.CTk):
         self.follow_persist_decay = 0.86
         self.autonomy_enabled = ctk.BooleanVar(value=False)
         self.last_live_frame = None
+
+        # Capture sources
+        self.rgb_source = "screen"  # screen | camera
+        self.depth_source = "screen"  # screen | camera
+        self.rgb_device_index = 0
+        self.depth_device_index = 0
+        self.rgb_cap = None
+        self.depth_cap = None
+        self.camera_width = 640
+        self.camera_height = 480
+        self.camera_fps = 30
+
+        # Inference tuning for faster FPS
+        self.infer_imgsz = 320
+        self.infer_conf = 0.40
+        self.infer_iou = 0.50
+        self.infer_max_det = 6
 
         # state
         self.is_running = False
@@ -159,11 +181,23 @@ class HexVisionApp(ctk.CTk):
         self.rgb_region_label = ctk.CTkLabel(self.region_frame, text=f"RGB Zone: {self.rgb_monitor['width']}x{self.rgb_monitor['height']} at ({self.rgb_monitor['left']}, {self.rgb_monitor['top']})", font=ctk.CTkFont(size=11))
         self.rgb_region_label.pack(pady=(3, 1))
 
+        self.rgb_source_label = ctk.CTkLabel(self.region_frame, text="RGB Source: Screen", font=ctk.CTkFont(size=10))
+        self.rgb_source_label.pack(pady=(0, 1))
+
         self.btn_set_rgb = ctk.CTkButton(self.region_frame, text="Set RGB Camera Zone", command=self.set_rgb_region, height=26)
         self.btn_set_rgb.pack(pady=2)
 
+        self.btn_set_rgb_camera = ctk.CTkButton(self.region_frame, text="Select RGB Camera Device", command=self.set_rgb_camera_device, height=26)
+        self.btn_set_rgb_camera.pack(pady=2)
+
         self.depth_region_label = ctk.CTkLabel(self.region_frame, text="Depth Zone: Not Set", font=ctk.CTkFont(size=11))
         self.depth_region_label.pack(pady=(2, 1))
+
+        self.depth_source_label = ctk.CTkLabel(self.region_frame, text="Depth Source: Screen", font=ctk.CTkFont(size=10))
+        self.depth_source_label.pack(pady=(0, 1))
+
+        self.btn_set_depth_camera = ctk.CTkButton(self.region_frame, text="Select Depth Camera Device", command=self.set_depth_camera_device, height=26)
+        self.btn_set_depth_camera.pack(pady=2)
 
         self.btn_set_depth = ctk.CTkButton(self.region_frame, text="Set Depth Camera Zone", command=self.set_depth_region, height=26)
         self.btn_set_depth.pack(pady=2)
@@ -643,6 +677,8 @@ class HexVisionApp(ctk.CTk):
         def on_selected(region):
             self.rgb_monitor = region
             self.rgb_region_label.configure(text=f"RGB Zone: {self.rgb_monitor['width']}x{self.rgb_monitor['height']} at ({self.rgb_monitor['left']}, {self.rgb_monitor['top']})")
+            self.rgb_source = "screen"
+            self.update_source_labels()
             
         selector = RegionSelector(self, on_selected)
         self.wait_window(selector)
@@ -654,6 +690,8 @@ class HexVisionApp(ctk.CTk):
         def on_selected(region):
             self.depth_monitor = region
             self.depth_region_label.configure(text=f"Depth Zone: {self.depth_monitor['width']}x{self.depth_monitor['height']} at ({self.depth_monitor['left']}, {self.depth_monitor['top']})")
+            self.depth_source = "screen"
+            self.update_source_labels()
             
         selector = RegionSelector(self, on_selected)
         self.wait_window(selector)
@@ -672,6 +710,86 @@ class HexVisionApp(ctk.CTk):
         selector = RegionSelector(self, on_selected)
         self.wait_window(selector)
         self.deiconify()
+
+    def set_rgb_camera_device(self):
+        device_index = simpledialog.askinteger(
+            "RGB Camera Device",
+            "Enter camera device index (0, 1, 2, ...):",
+            parent=self,
+            initialvalue=self.rgb_device_index,
+            minvalue=0,
+            maxvalue=16,
+        )
+        if device_index is None:
+            return
+        self.rgb_device_index = int(device_index)
+        self.rgb_source = "camera"
+        self.update_source_labels()
+
+    def set_depth_camera_device(self):
+        device_index = simpledialog.askinteger(
+            "Depth Camera Device",
+            "Enter camera device index (0, 1, 2, ...):",
+            parent=self,
+            initialvalue=self.depth_device_index,
+            minvalue=0,
+            maxvalue=16,
+        )
+        if device_index is None:
+            return
+        self.depth_device_index = int(device_index)
+        self.depth_source = "camera"
+        self.update_source_labels()
+
+    def update_source_labels(self):
+        rgb_desc = "Screen" if self.rgb_source == "screen" else f"Camera ({self.rgb_device_index})"
+        depth_desc = "Screen" if self.depth_source == "screen" else f"Camera ({self.depth_device_index})"
+        self.rgb_source_label.configure(text=f"RGB Source: {rgb_desc}")
+        self.depth_source_label.configure(text=f"Depth Source: {depth_desc}")
+
+    def _open_camera(self, device_index):
+        cap = cv2.VideoCapture(device_index, cv2.CAP_DSHOW)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(device_index)
+        if not cap.isOpened():
+            return None
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.camera_width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.camera_height)
+        cap.set(cv2.CAP_PROP_FPS, self.camera_fps)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        return cap
+
+    def open_captures(self):
+        self.release_captures()
+
+        if self.rgb_source == "camera":
+            self.rgb_cap = self._open_camera(self.rgb_device_index)
+            if self.rgb_cap is None:
+                messagebox.showerror("RGB Camera", f"Could not open RGB camera device {self.rgb_device_index}.")
+                return False
+
+        if self.depth_source == "camera":
+            self.depth_cap = self._open_camera(self.depth_device_index)
+            if self.depth_cap is None:
+                messagebox.showerror("Depth Camera", f"Could not open depth camera device {self.depth_device_index}. Falling back to screen capture.")
+                self.depth_source = "screen"
+                self.update_source_labels()
+
+        return True
+
+    def release_captures(self):
+        if self.rgb_cap is not None:
+            try:
+                self.rgb_cap.release()
+            except Exception:
+                pass
+        if self.depth_cap is not None:
+            try:
+                self.depth_cap.release()
+            except Exception:
+                pass
+        self.rgb_cap = None
+        self.depth_cap = None
 
     @staticmethod
     def _region_center(region):
@@ -983,13 +1101,17 @@ class HexVisionApp(ctk.CTk):
 
     def start_vision(self):
         self.load_model()
+        if not self.open_captures():
+            return
         self.is_running = True
         self.follow_look_state = "idle"
         self.follow_cleanup_state = "idle"
         self.btn_start.configure(state="disabled")
         self.btn_stop.configure(state="normal")
         self.btn_set_rgb.configure(state="disabled")
+        self.btn_set_rgb_camera.configure(state="disabled")
         self.btn_set_depth.configure(state="disabled")
+        self.btn_set_depth_camera.configure(state="disabled")
 
         self.capture_thread = threading.Thread(target=self.vision_loop)
         self.capture_thread.daemon = True
@@ -1003,12 +1125,16 @@ class HexVisionApp(ctk.CTk):
         self.btn_start.configure(state="normal")
         self.btn_stop.configure(state="disabled")
         self.btn_set_rgb.configure(state="normal")
+        self.btn_set_rgb_camera.configure(state="normal")
         self.btn_set_depth.configure(state="normal")
+        self.btn_set_depth_camera.configure(state="normal")
         self.mouse_hold_arm_time = None
         self.set_mouse_hold(False)
+        self.release_captures()
 
     def vision_loop(self):
-        sct = mss.mss()
+        use_screen = self.rgb_source == "screen" or (self.depth_source == "screen" and self.depth_monitor is not None)
+        sct = mss.mss() if use_screen else None
         prev_time = time.time()
         
         # Smoothing variables for motor control
@@ -1050,21 +1176,34 @@ class HexVisionApp(ctk.CTk):
             detected_objects = []
             person_boxes = []
             
-            # Capture RGB screen
-            rgb_screenshot = sct.grab(self.rgb_monitor)
-            frame = np.array(rgb_screenshot)
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+            # Capture RGB frame (screen or camera)
+            if self.rgb_source == "screen":
+                if sct is None:
+                    continue
+                rgb_screenshot = sct.grab(self.rgb_monitor)
+                frame = np.asarray(rgb_screenshot)[:, :, :3]
+            else:
+                if self.rgb_cap is None:
+                    continue
+                ok, frame = self.rgb_cap.read()
+                if not ok or frame is None:
+                    continue
             
-            # Capture Depth screen if configured
+            # Capture Depth frame if configured
             depth_frame = None
-            if self.depth_monitor:
-                depth_screenshot = sct.grab(self.depth_monitor)
-                depth_frame_bgra = np.array(depth_screenshot)
-                # Convert Depth to grayscale, but we pull the RED channel purely 
-                # (Index 2 in BGRA) since sometimes depth cameras output red to mean "pure white / close".
-                depth_frame = depth_frame_bgra[:, :, 2]
-                
-                # Resize depth exactly to match RGB width and height
+            if self.depth_source == "screen" and self.depth_monitor:
+                if sct is not None:
+                    depth_screenshot = sct.grab(self.depth_monitor)
+                    depth_frame_bgra = np.asarray(depth_screenshot)
+                    # Convert Depth to grayscale using RED channel for screen capture.
+                    depth_frame = depth_frame_bgra[:, :, 2]
+            elif self.depth_source == "camera" and self.depth_cap is not None:
+                ok, depth_bgr = self.depth_cap.read()
+                if ok and depth_bgr is not None:
+                    depth_frame = cv2.cvtColor(depth_bgr, cv2.COLOR_BGR2GRAY)
+
+            # Resize depth exactly to match RGB width and height
+            if depth_frame is not None and depth_frame.shape[:2] != frame.shape[:2]:
                 depth_frame = cv2.resize(depth_frame, (frame.shape[1], frame.shape[0]))
 
             target_cx = None
@@ -1077,10 +1216,10 @@ class HexVisionApp(ctk.CTk):
                 frame,
                 verbose=False,
                 classes=[0],
-                conf=0.35,
-                iou=0.50,
-                imgsz=416,
-                max_det=8,
+                conf=self.infer_conf,
+                iou=self.infer_iou,
+                imgsz=self.infer_imgsz,
+                max_det=self.infer_max_det,
             )
 
             frame_h, frame_w = frame.shape[:2]
